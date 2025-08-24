@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from .backbones.resnet import ResNet, Bottleneck
 from .backbones.vit_transoss import vit_base_patch16_224_TransOSS
+from .backbones.dinov3 import DinoV3
 from loss.metric_learning import Arcface, Cosface, AMSoftmax, CircleLoss
 
 
@@ -147,12 +148,18 @@ class build_transformer(nn.Module):
                                                             drop_rate= cfg.MODEL.DROP_OUT,
                                                             attn_drop_rate=cfg.MODEL.ATT_DROP_RATE,
                                                             sse=cfg.MODEL.SSE)
+        elif cfg.MODEL.TRANSFORMER_TYPE == 'dinov3':
+            self.base = factory[cfg.MODEL.TRANSFORMER_TYPE]()
         else:
             raise ValueError('Unsupported model type: {}'.format(cfg.MODEL.TRANSFORMER_TYPE))
-        if pretrain_choice == 'imagenet':
-            self.base.load_param(model_path)
-            print('Loading pretrained model......from {}'.format(model_path))
 
+        if pretrain_choice == 'imagenet':
+            # Note: For DinoV3, this choice doesn't do anything as weights are loaded on init.
+            # For other models, it loads weights from PRETRAIN_PATH.
+            if cfg.MODEL.PRETRAIN_PATH:
+                self.base.load_param(model_path)
+                print('Loading pretrained model......from {}'.format(model_path))
+        
         self.num_classes = num_classes
         self.ID_LOSS_TYPE = cfg.MODEL.ID_LOSS_TYPE
         if self.ID_LOSS_TYPE == 'arcface':
@@ -192,7 +199,11 @@ class build_transformer(nn.Module):
 
 
     def forward(self, x, label=None, cam_label= None, img_wh=None):
-        global_feat = self.base(x, cam_label=cam_label, img_wh=img_wh)
+        if self.model_type == 'dinov3':
+            global_feat = self.base(x)
+        else:
+            global_feat = self.base(x, cam_label=cam_label, img_wh=img_wh)
+
         if self.training:
             if self.train_pair:
                 b_s = global_feat.size(0)
@@ -241,13 +252,14 @@ class build_transformer(nn.Module):
 
 __factory_T_type = {
     'vit_base_patch16_224_TransOSS': vit_base_patch16_224_TransOSS,
+    'dinov3': DinoV3,
 }
 
 
 def make_model(cfg, num_class, camera_num):
     if cfg.MODEL.NAME == 'transformer':
         model = build_transformer(num_class, camera_num, cfg, __factory_T_type)
-        print('===========building transformer===========')
+        print(f'===========building transformer: {cfg.MODEL.TRANSFORMER_TYPE}===========')
     else:
         model = Backbone(num_class, cfg)
         print('===========building ResNet===========')
