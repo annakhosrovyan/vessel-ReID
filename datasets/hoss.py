@@ -5,17 +5,26 @@ from .bases import BaseImageDataset
 
 
 class HOSS(BaseImageDataset):
-    """
-    HOSS dataset
-    """
     dataset_dir = 'HOSS'
-
-    def __init__(self, root='', verbose=True, pid_begin = 0, **kwargs):
+    s2o_dir = 'subset/S2O'
+    o2s_dir = 'subset/O2S'
+    
+    def __init__(self, root='', verbose=True, pid_begin = 0, eval_mode='all', **kwargs):
         super(HOSS, self).__init__()
         self.dataset_dir = osp.join(root, self.dataset_dir)
+        self.s2o_dir = osp.join(self.dataset_dir, self.s2o_dir)
+        self.o2s_dir = osp.join(self.dataset_dir, self.o2s_dir)
+
         self.train_dir = osp.join(self.dataset_dir, 'bounding_box_train')
         self.query_dir = osp.join(self.dataset_dir, 'query')
         self.gallery_dir = osp.join(self.dataset_dir, 'bounding_box_test')
+
+        if eval_mode == 's2o':
+            self.query_dir = osp.join(self.s2o_dir, 'query')
+            self.gallery_dir = osp.join(self.s2o_dir, 'bounding_box_test')
+        elif eval_mode == 'o2s':
+            self.query_dir = osp.join(self.o2s_dir, 'query')
+            self.gallery_dir = osp.join(self.o2s_dir, 'bounding_box_test')
 
         self._check_before_run()
         self.pid_begin = pid_begin

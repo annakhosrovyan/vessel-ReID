@@ -26,6 +26,7 @@ INPUT:
 DATASETS:
   NAMES: ('HOSS')
   ROOT_DIR: ('/nfs/h100/raid/rs/vessel_detection')
+  EVAL_MODE: 'all'
 
 DATALOADER:
   SAMPLER: 'softmax_triplet'

@@ -43,7 +43,8 @@ if __name__ == "__main__":
     train_loader, train_loader_normal, _, val_loader, num_query, num_classes, camera_num = make_dataloader(cfg)
 
     model = make_model(cfg, num_class=num_classes, camera_num=camera_num)
-    model.load_param(cfg.TEST.WEIGHT)
+    if cfg.TEST.WEIGHT != '':
+        model.load_param(cfg.TEST.WEIGHT)
     do_inference(cfg,
              model,
              val_loader,

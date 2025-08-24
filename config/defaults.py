@@ -93,6 +93,8 @@ _C.DATASETS = CN()
 _C.DATASETS.NAMES = ('HOSS')
 # Root directory where datasets should be used (and downloaded if not found)
 _C.DATASETS.ROOT_DIR = ('/nfs/h100/raid/rs/vessel_detection')
+# Evaluation mode for datasets: 'all', 's2o', 'o2s'
+_C.DATASETS.EVAL_MODE = 'all'
 
 
 # -----------------------------------------------------------------------------

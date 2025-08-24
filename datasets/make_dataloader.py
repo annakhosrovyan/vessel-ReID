@@ -64,7 +64,7 @@ def make_dataloader(cfg):
 
     num_workers = cfg.DATALOADER.NUM_WORKERS
 
-    dataset = __factory[cfg.DATASETS.NAMES](root=cfg.DATASETS.ROOT_DIR)
+    dataset = __factory[cfg.DATASETS.NAMES](root=cfg.DATASETS.ROOT_DIR, eval_mode=cfg.DATASETS.EVAL_MODE)
 
     train_set = ImageDataset(dataset.train, train_transforms)
     train_set_normal = ImageDataset(dataset.train, val_transforms)
@@ -139,8 +139,8 @@ def make_dataloader_pair(cfg):
 
     num_workers = cfg.DATALOADER.NUM_WORKERS
 
-    dataset = __factory[cfg.DATASETS.NAMES](root=cfg.DATASETS.ROOT_DIR)
-    dataset_val = __factory['HOSS'](root='../dataset')
+    dataset = __factory[cfg.DATASETS.NAMES](root=cfg.DATASETS.ROOT_DIR, eval_mode=cfg.DATASETS.EVAL_MODE)
+    dataset_val = __factory['HOSS'](root='../dataset', eval_mode=cfg.DATASETS.EVAL_MODE)
 
     train_set_pair = ImageDataset(dataset.train_pair, train_transforms, pair=True)
     num_classes = dataset.num_train_pids
