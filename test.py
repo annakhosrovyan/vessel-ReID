@@ -45,8 +45,12 @@ if __name__ == "__main__":
     model = make_model(cfg, num_class=num_classes, camera_num=camera_num)
     if cfg.TEST.WEIGHT != '':
         model.load_param(cfg.TEST.WEIGHT)
-    do_inference(cfg,
-             model,
-             val_loader,
-             num_query)
-
+    
+    logger.info(f"cfg.DATASETS.EVAL_MODE: {cfg.DATASETS.EVAL_MODE}")
+    do_inference(
+        cfg,
+        model,
+        val_loader,
+        num_query,
+        cross_id_modality=(cfg.DATASETS.EVAL_MODE == "cross_id_modality")
+    )

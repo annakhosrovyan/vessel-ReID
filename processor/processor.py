@@ -226,13 +226,13 @@ def do_train(cfg,
 def do_inference(cfg,
                  model,
                  val_loader,
-                 num_query):
+                 num_query,
+                 cross_id_modality=False):
     device = "cuda"
     logger = logging.getLogger("transreid.test")
     logger.info("Enter inferencing")
 
-    evaluator = R1_mAP_eval(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM)
-
+    evaluator = R1_mAP_eval(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM, cross_id_modality=cross_id_modality)
     evaluator.reset()
 
     if device:

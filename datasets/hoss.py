@@ -32,6 +32,15 @@ class HOSS(BaseImageDataset):
         query = self._process_dir(self.query_dir, relabel=False)
         gallery = self._process_dir(self.gallery_dir, relabel=False)
 
+        if eval_mode == 's2s':
+            query = self._filter_by_modality(query, modality='SAR')
+            gallery = self._filter_by_modality(gallery, modality='SAR')
+            query, gallery = self._ensure_mutual_ids(query, gallery)
+        elif eval_mode == 'o2o':
+            query = self._filter_by_modality(query, modality='RGB')
+            gallery = self._filter_by_modality(gallery, modality='RGB')
+            query, gallery = self._ensure_mutual_ids(query, gallery)
+
         if verbose:
             print("=> HOSS ReID Dataset loaded")
             self.print_dataset_statistics(train, query, gallery)
@@ -48,6 +57,31 @@ class HOSS(BaseImageDataset):
         self.num_train_pair_pids, self.num_train_pair_imgs, self.num_train_pair_cams, self.num_train_pair_vids = self.get_imagedata_info_pair(self.train_pair)
         self.num_query_pids, self.num_query_imgs, self.num_query_cams, self.num_query_vids = self.get_imagedata_info(self.query)
         self.num_gallery_pids, self.num_gallery_imgs, self.num_gallery_cams, self.num_gallery_vids = self.get_imagedata_info(self.gallery)
+
+    def _ensure_mutual_ids(self, query, gallery):
+        query_ids = set()
+        gallery_ids = set()
+        
+        for _, pid, _, _ in query:
+            query_ids.add(pid)
+        for _, pid, _, _ in gallery:
+            gallery_ids.add(pid)
+        
+        mutual_ids = query_ids.intersection(gallery_ids)
+        
+        filtered_query = [(img_path, pid, camid, trackid) for img_path, pid, camid, trackid in query if pid in mutual_ids]
+        filtered_gallery = [(img_path, pid, camid, trackid) for img_path, pid, camid, trackid in gallery if pid in mutual_ids]
+        
+        return filtered_query, filtered_gallery
+
+    def _filter_by_modality(self, dataset, modality):
+        filtered_dataset = []
+        for img_path, pid, camid, trackid in dataset:
+            if modality == 'SAR' and img_path.endswith('SAR.tif'):
+                filtered_dataset.append((img_path, pid, camid, trackid))
+            elif modality == 'RGB' and img_path.endswith('RGB.tif'):
+                filtered_dataset.append((img_path, pid, camid, trackid))
+        return filtered_dataset
 
     def get_imagedata_info_pair(self, data):
         pids, cams, tracks = [], [], []
