@@ -59,14 +59,14 @@ def eval_func(distmat, q_pids, g_pids, q_camids, g_camids, max_rank=50, cross_id
             remove = (g_pids[order] == q_pid) & (g_camids[order] == q_camid)
             keep = np.invert(remove)
             
-            print("="*100)
-            print(f"Cross-ID modality filtering for query {q_pid} (modality {q_camid}):")
-            print(f"  Original gallery items: {len(g_pids)}")
-            print(f"  Items removed (same ID+modality): {remove.sum()}")
-            print(f"  Items kept after filtering: {keep.sum()}")
-            print(f"  Query: ID={q_pid}, Modality={q_camid}")
-            print(f"  Removed items: {list(zip(g_pids[order][remove], g_camids[order][remove]))}")
-            print("="*100)
+            # print("="*100)
+            # print(f"Cross-ID modality filtering for query {q_pid} (modality {q_camid}):")
+            # print(f"  Original gallery items: {len(g_pids)}")
+            # print(f"  Items removed (same ID+modality): {remove.sum()}")
+            # print(f"  Items kept after filtering: {keep.sum()}")
+            # print(f"  Query: ID={q_pid}, Modality={q_camid}")
+            # print(f"  Removed items: {list(zip(g_pids[order][remove], g_camids[order][remove]))}")
+            # print("="*100)
         else:
             keep = np.ones_like(g_pids, dtype=bool)
 

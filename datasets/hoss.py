@@ -16,8 +16,12 @@ class HOSS(BaseImageDataset):
         self.o2s_dir = osp.join(self.dataset_dir, self.o2s_dir)
 
         self.train_dir = osp.join(self.dataset_dir, 'bounding_box_train')
+        
         self.query_dir = osp.join(self.dataset_dir, 'query')
         self.gallery_dir = osp.join(self.dataset_dir, 'bounding_box_test')
+        
+        self.query_val_dir = osp.join(self.dataset_dir, 'query_val')
+        self.gallery_val_dir = osp.join(self.dataset_dir, 'gallery_val')
 
         if eval_mode == 's2o':
             self.query_dir = osp.join(self.s2o_dir, 'query')
@@ -29,8 +33,12 @@ class HOSS(BaseImageDataset):
         self._check_before_run()
         self.pid_begin = pid_begin
         train, train_pair = self._process_dir_train(self.train_dir, relabel=True)
+        
         query = self._process_dir(self.query_dir, relabel=False)
         gallery = self._process_dir(self.gallery_dir, relabel=False)
+        
+        query_val = self._process_dir(self.query_val_dir, relabel=False)
+        gallery_val = self._process_dir(self.gallery_val_dir, relabel=False)
 
         if eval_mode == 's2s':
             query = self._filter_by_modality(query, modality='SAR')
@@ -43,7 +51,8 @@ class HOSS(BaseImageDataset):
 
         if verbose:
             print("=> HOSS ReID Dataset loaded")
-            self.print_dataset_statistics(train, query, gallery)
+            self.print_dataset_statistics(train, query, gallery, query_val, gallery_val)
+            
             if train_pair is not None:
                 print("Number of RGB-SAR pair: {}".format(len(train_pair)))
                 print("  ----------------------------------------")
@@ -52,9 +61,15 @@ class HOSS(BaseImageDataset):
         self.train_pair = train_pair
         self.query = query
         self.gallery = gallery
+        self.query_val = query_val
+        self.gallery_val = gallery_val
 
         self.num_train_pids, self.num_train_imgs, self.num_train_cams, self.num_train_vids = self.get_imagedata_info(self.train)
         self.num_train_pair_pids, self.num_train_pair_imgs, self.num_train_pair_cams, self.num_train_pair_vids = self.get_imagedata_info_pair(self.train_pair)
+
+        self.num_query_pids_val, self.num_query_imgs_val, self.num_query_cams_val, self.num_query_vids_val = self.get_imagedata_info(self.query_val)
+        self.num_gallery_pids_val, self.num_gallery_imgs_val, self.num_gallery_cams_val, self.num_gallery_vids_val = self.get_imagedata_info(self.gallery_val)
+
         self.num_query_pids, self.num_query_imgs, self.num_query_cams, self.num_query_vids = self.get_imagedata_info(self.query)
         self.num_gallery_pids, self.num_gallery_imgs, self.num_gallery_cams, self.num_gallery_vids = self.get_imagedata_info(self.gallery)
 
@@ -110,6 +125,10 @@ class HOSS(BaseImageDataset):
             raise RuntimeError("'{}' is not available".format(self.query_dir))
         if not osp.exists(self.gallery_dir):
             raise RuntimeError("'{}' is not available".format(self.gallery_dir))
+        if not osp.exists(self.query_val_dir):
+            raise RuntimeError("'{}' is not available".format(self.query_val_dir))
+        if not osp.exists(self.gallery_val_dir):
+            raise RuntimeError("'{}' is not available".format(self.gallery_val_dir))
 
     def _process_dir(self, dir_path, relabel=False):
         img_paths = glob.glob(osp.join(dir_path, '*.tif'))

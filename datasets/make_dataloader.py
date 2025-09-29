@@ -67,7 +67,7 @@ def make_dataloader(cfg):
     dataset = __factory[cfg.DATASETS.NAMES](root=cfg.DATASETS.ROOT_DIR, eval_mode=cfg.DATASETS.EVAL_MODE)
 
     train_set = ImageDataset(dataset.train, train_transforms)
-    train_set_normal = ImageDataset(dataset.train, val_transforms)
+    val_set = ImageDataset(dataset.query_val + dataset.gallery_val, val_transforms)
     train_set_pair = ImageDataset(dataset.train_pair, train_transforms, pair=True)
     num_classes = dataset.num_train_pids
     cam_num = dataset.num_train_cams
@@ -100,14 +100,14 @@ def make_dataloader(cfg):
     else:
         print('unsupported sampler! expected softmax or triplet but got {}'.format(cfg.SAMPLER))
 
-    val_set = ImageDataset(dataset.query + dataset.gallery, val_transforms)
+    test_set = ImageDataset(dataset.query + dataset.gallery, val_transforms)
 
     val_loader = DataLoader(
         val_set, batch_size=cfg.TEST.IMS_PER_BATCH, shuffle=False, num_workers=num_workers,
         collate_fn=val_collate_fn
     )
-    train_loader_normal = DataLoader(
-        train_set_normal, batch_size=cfg.TEST.IMS_PER_BATCH, shuffle=False, num_workers=num_workers,
+    test_loader = DataLoader(
+        test_set, batch_size=cfg.TEST.IMS_PER_BATCH, shuffle=False, num_workers=num_workers,
         collate_fn=val_collate_fn
     )
     if cfg.SOLVER.IMS_PER_BATCH % 2 != 0:
@@ -116,7 +116,7 @@ def make_dataloader(cfg):
         train_set_pair, batch_size=int(cfg.SOLVER.IMS_PER_BATCH / 2), shuffle=True, num_workers=num_workers,
         collate_fn=train_pair_collate_fn
     )
-    return train_loader, train_loader_normal, train_loader_pair, val_loader, len(dataset.query), num_classes, cam_num
+    return train_loader, val_loader, len(dataset.query_val), train_loader_pair, test_loader, len(dataset.query), num_classes, cam_num
 
 
 def make_dataloader_pair(cfg):

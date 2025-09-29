@@ -8,6 +8,7 @@ from utils.metrics import R1_mAP_eval
 from torch.cuda import amp
 import torch.distributed as dist
 from loss import clip_loss
+import wandb
 
 
 def do_train_pair(cfg,
@@ -124,6 +125,13 @@ def do_train(cfg,
     evaluator = R1_mAP_eval(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM)
     scaler = amp.GradScaler()
 
+    best_mAP = 0.0
+    wandb.init(
+        project="vessel-reidentification",
+        name=f"{cfg.MODEL.TRANSFORMER_TYPE}_lr{cfg.SOLVER.BASE_LR}_epochs{cfg.SOLVER.MAX_EPOCHS}",
+        config=cfg
+    )
+
     # train
     if torch.cuda.device_count() > 1 and cfg.MODEL.DIST_TRAIN:
         model.module.train_with_single()
@@ -205,6 +213,13 @@ def do_train(cfg,
                     logger.info("mAP: {:.1%}".format(mAP))
                     for r in [1, 5, 10]:
                         logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
+                    
+                    if mAP > best_mAP:
+                        best_mAP = mAP
+                        torch.save(model.state_dict(),
+                                   os.path.join(cfg.OUTPUT_DIR, 'best_model.pth'))
+                        logger.info("New best model saved with mAP: {:.1%} at epoch {}".format(best_mAP, epoch))
+                    
                     torch.cuda.empty_cache()
             else:
                 model.eval()
@@ -220,12 +235,37 @@ def do_train(cfg,
                 logger.info("mAP: {:.1%}".format(mAP))
                 for r in [1, 5, 10]:
                     logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
+                
+                if mAP > best_mAP:
+                    best_mAP = mAP
+                    torch.save(model.state_dict(),
+                               os.path.join(cfg.OUTPUT_DIR, 'best_model.pth'))
+                    logger.info("New best model saved with mAP: {:.1%} at epoch {}".format(best_mAP, epoch))
+                
                 torch.cuda.empty_cache()
+
+        wandb.log({
+            "epoch": epoch,
+            "train_loss": loss_meter.avg,
+            "train_acc": acc_meter.avg,
+            "learning_rate": scheduler._get_lr(epoch)[0]
+        })
+
+        wandb.log({
+            "val_mAP": mAP,
+            "val_rank1": cmc[0],
+            "val_rank5": cmc[4],
+            "val_rank10": cmc[9]
+        })
+
+    wandb.finish()
+
+    logger.info("Training completed. Best mAP: {:.1%}".format(best_mAP))
 
 
 def do_inference(cfg,
                  model,
-                 val_loader,
+                 test_loader,
                  num_query,
                  cross_id_modality=False):
     device = "cuda"
@@ -244,7 +284,7 @@ def do_inference(cfg,
     model.eval()
     img_path_list = []
 
-    for n_iter, (img, pid, camid, camids, target_view, imgpath, img_wh) in enumerate(val_loader):
+    for n_iter, (img, pid, camid, camids, target_view, imgpath, img_wh) in enumerate(test_loader):
         with torch.no_grad():
             img = img.to(device)
             camids = camids.to(device)
@@ -254,7 +294,7 @@ def do_inference(cfg,
             img_path_list.extend(imgpath)
 
     cmc, mAP, _, _, _, _, _ = evaluator.compute()
-    logger.info("Validation Results ")
+    logger.info("Test Results ")
     logger.info("mAP: {:.1%}".format(mAP))
     for r in [1, 5, 10]:
         logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))

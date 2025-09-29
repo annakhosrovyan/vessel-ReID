@@ -40,7 +40,7 @@ if __name__ == "__main__":
 
     os.environ['CUDA_VISIBLE_DEVICES'] = cfg.MODEL.DEVICE_ID
 
-    train_loader, train_loader_normal, _, val_loader, num_query, num_classes, camera_num = make_dataloader(cfg)
+    _, _, _, _, test_loader, num_query, num_classes, camera_num = make_dataloader(cfg)
 
     model = make_model(cfg, num_class=num_classes, camera_num=camera_num)
     if cfg.TEST.WEIGHT != '':
@@ -50,7 +50,7 @@ if __name__ == "__main__":
     do_inference(
         cfg,
         model,
-        val_loader,
+        test_loader,
         num_query,
         cross_id_modality=(cfg.DATASETS.EVAL_MODE == "cross_id_modality")
     )

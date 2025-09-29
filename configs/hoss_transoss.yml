@@ -1,6 +1,6 @@
 MODEL:
   PRETRAIN_CHOICE: 'imagenet'
-  PRETRAIN_PATH: 'weights/vit_b512_pre.pth'
+  PRETRAIN_PATH: '/nfs/h100/raid/rs/vessel_detection/weights/vit_b512_pre.pth'
   METRIC_LOSS_TYPE: 'triplet'
   IF_LABELSMOOTH: 'off'
   IF_WITH_CENTER: 'no'
@@ -40,9 +40,9 @@ SOLVER:
   IMS_PER_BATCH: 32
   WARMUP_METHOD: 'linear'
   LARGE_FC_LR: False
-  CHECKPOINT_PERIOD: 10
+  CHECKPOINT_PERIOD: 200
   LOG_PERIOD: 80
-  EVAL_PERIOD: 10
+  EVAL_PERIOD: 1
   WEIGHT_DECAY:  1e-4
   WEIGHT_DECAY_BIAS: 1e-4
   BIAS_LR_FACTOR: 2
