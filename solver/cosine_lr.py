@@ -113,3 +113,6 @@ class CosineLRScheduler(Scheduler):
             return self.t_initial * cycles
         else:
             return int(math.floor(-self.t_initial * (self.t_mul ** cycles - 1) / (1 - self.t_mul)))
+
+    def get_last_lr(self):
+        return [group['lr'] for group in self.optimizer.param_groups]

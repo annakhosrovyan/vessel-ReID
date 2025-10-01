@@ -72,7 +72,7 @@ def do_train_pair(cfg,
                 if (n_iter + 1) % log_period == 0:
                     logger.info("Epoch[{}] Iteration[{}/{}] Loss: {:.3f}, Base Lr: {:.2e}"
                                 .format(epoch, (n_iter + 1), len(train_loader_pair),
-                                        loss_meter.avg, scheduler._get_lr(epoch)[0]))
+                                        loss_meter.avg, scheduler.get_last_lr()[0]))
 
             end_time = time.time()
             time_per_batch = (end_time - start_time) / (n_iter + 1)
@@ -128,7 +128,7 @@ def do_train(cfg,
     best_mAP = 0.0
     wandb.init(
         project="vessel-reidentification",
-        name=f"{cfg.MODEL.TRANSFORMER_TYPE}_lr{cfg.SOLVER.BASE_LR}_epochs{cfg.SOLVER.MAX_EPOCHS}",
+        name=f"opt{cfg.SOLVER.OPTIMIZER_NAME}_lr{cfg.SOLVER.BASE_LR}_wd{cfg.SOLVER.WEIGHT_DECAY}_warmup{cfg.SOLVER.WARMUP_EPOCHS}_sched{cfg.SOLVER.SCHEDULER_TYPE}_ep{cfg.SOLVER.MAX_EPOCHS}",
         config=cfg
     )
 
@@ -177,7 +177,7 @@ def do_train(cfg,
             if (n_iter + 1) % log_period == 0:
                 logger.info("Epoch[{}] Iteration[{}/{}] Loss: {:.3f}, Acc: {:.3f}, Base Lr: {:.2e}"
                             .format(epoch, (n_iter + 1), len(train_loader),
-                                    loss_meter.avg, acc_meter.avg, scheduler._get_lr(epoch)[0]))
+                                    loss_meter.avg, acc_meter.avg, scheduler.get_last_lr()[0]))
 
         end_time = time.time()
         time_per_batch = (end_time - start_time) / (n_iter + 1)
@@ -244,19 +244,19 @@ def do_train(cfg,
                 
                 torch.cuda.empty_cache()
 
-        wandb.log({
-            "epoch": epoch,
-            "train_loss": loss_meter.avg,
-            "train_acc": acc_meter.avg,
-            "learning_rate": scheduler._get_lr(epoch)[0]
-        })
+            wandb.log({
+                "epoch": epoch,
+                "train_loss": loss_meter.avg,
+                "train_acc": acc_meter.avg,
+                "learning_rate": scheduler.get_last_lr()[0]
+            })
 
-        wandb.log({
-            "val_mAP": mAP,
-            "val_rank1": cmc[0],
-            "val_rank5": cmc[4],
-            "val_rank10": cmc[9]
-        })
+            wandb.log({
+                "val_mAP": mAP,
+                "val_rank1": cmc[0],
+                "val_rank5": cmc[4],
+                "val_rank10": cmc[9]
+            })
 
     wandb.finish()
 

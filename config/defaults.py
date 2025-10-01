@@ -151,6 +151,9 @@ _C.SOLVER.WARMUP_METHOD = "linear"
 _C.SOLVER.COSINE_MARGIN = 0.5
 _C.SOLVER.COSINE_SCALE = 30
 
+# LR scheduler type: 'cosine' or 'step'
+_C.SOLVER.SCHEDULER_TYPE = 'cosine'
+
 # epoch number of saving checkpoints
 _C.SOLVER.CHECKPOINT_PERIOD = 10
 # iteration of display training log
