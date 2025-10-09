@@ -3,6 +3,7 @@ import torch.nn as nn
 from .backbones.resnet import ResNet, Bottleneck
 from .backbones.vit_transoss import vit_base_patch16_224_TransOSS
 from .backbones.dinov3 import DinoV3
+from .backbones.chi_vit import chivit_base
 from loss.metric_learning import Arcface, Cosface, AMSoftmax, CircleLoss
 
 
@@ -142,23 +143,32 @@ class build_transformer(nn.Module):
             camera_num = camera_num
         else:
             camera_num = 0
-        if cfg.MODEL.TRANSFORMER_TYPE == 'vit_base_patch16_224_TransOSS':
-            self.base = factory[cfg.MODEL.TRANSFORMER_TYPE](img_size=cfg.INPUT.SIZE_TRAIN, mie_coe=cfg.MODEL.MIE_COE,
-                                                            camera=camera_num, stride_size=cfg.MODEL.STRIDE_SIZE, drop_path_rate=cfg.MODEL.DROP_PATH,
-                                                            drop_rate= cfg.MODEL.DROP_OUT,
-                                                            attn_drop_rate=cfg.MODEL.ATT_DROP_RATE,
-                                                            sse=cfg.MODEL.SSE)
-        elif cfg.MODEL.TRANSFORMER_TYPE == 'dinov3':
-            self.base = factory[cfg.MODEL.TRANSFORMER_TYPE]()
-        else:
+        model_class = factory.get(cfg.MODEL.TRANSFORMER_TYPE)
+        if model_class is None:
             raise ValueError('Unsupported model type: {}'.format(cfg.MODEL.TRANSFORMER_TYPE))
+        
+        model_kwargs = {
+            'img_size': cfg.INPUT.SIZE_TRAIN,
+            'stride_size': cfg.MODEL.STRIDE_SIZE,
+            'patch_size': cfg.MODEL.STRIDE_SIZE[0],
+            'drop_path_rate': cfg.MODEL.DROP_PATH,
+            'drop_rate': cfg.MODEL.DROP_OUT,
+            'attn_drop_rate': cfg.MODEL.ATT_DROP_RATE,
+            'camera': camera_num,
+            'mie_coe': cfg.MODEL.MIE_COE,
+            'sse': cfg.MODEL.SSE,
+        }
 
+        self.base = model_class(**model_kwargs)
+        print("pretrain_choice: ", pretrain_choice)
         if pretrain_choice == 'imagenet':
             # Note: For DinoV3, this choice doesn't do anything as weights are loaded on init.
             # For other models, it loads weights from PRETRAIN_PATH.
             if cfg.MODEL.PRETRAIN_PATH:
                 self.base.load_param(model_path)
                 print('Loading pretrained model......from {}'.format(model_path))
+            else:
+                print('WARNING: PRETRAIN_PATH is empty, training from scratch!')
         
         self.num_classes = num_classes
         self.ID_LOSS_TYPE = cfg.MODEL.ID_LOSS_TYPE
@@ -201,8 +211,30 @@ class build_transformer(nn.Module):
     def forward(self, x, label=None, cam_label= None, img_wh=None):
         if self.model_type == 'dinov3':
             global_feat = self.base(x)
+        elif self.model_type == 'chivit_base':
+            B = x.shape[0]
+            rgb_idx = torch.nonzero(cam_label == 0, as_tuple=True)[0]
+            sar_idx = torch.nonzero(cam_label == 1, as_tuple=True)[0]
+            feats = [None] * B
+            if rgb_idx.numel() > 0:
+                rgb_out = self.base(x[rgb_idx], channel_idxs=[0, 1, 2])
+                if isinstance(rgb_out, (tuple, list)):
+                    rgb_out = rgb_out[-1]
+                for i, idx in enumerate(rgb_idx.tolist()):
+                    feats[idx] = rgb_out[i]
+            if sar_idx.numel() > 0:
+                sar_input = x[sar_idx][:, :2, :, :]
+                sar_out = self.base(sar_input, channel_idxs=[10, 11])
+                if isinstance(sar_out, (tuple, list)):
+                    sar_out = sar_out[-1]
+                for i, idx in enumerate(sar_idx.tolist()):
+                    feats[idx] = sar_out[i]
+            global_feat = torch.stack(feats, dim=0)
         else:
             global_feat = self.base(x, cam_label=cam_label, img_wh=img_wh)
+
+        if isinstance(global_feat, (tuple, list)):
+            global_feat = global_feat[-1]
 
         if self.training:
             if self.train_pair:
@@ -253,6 +285,7 @@ class build_transformer(nn.Module):
 __factory_T_type = {
     'vit_base_patch16_224_TransOSS': vit_base_patch16_224_TransOSS,
     'dinov3': DinoV3,
+    'chivit_base': chivit_base,
 }
 
 

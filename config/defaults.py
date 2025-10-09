@@ -55,6 +55,7 @@ _C.MODEL.DROP_OUT = 0.0
 _C.MODEL.ATT_DROP_RATE = 0.0
 _C.MODEL.TRANSFORMER_TYPE = 'vit_base_patch16_224_TransOSS'
 _C.MODEL.STRIDE_SIZE = [16, 16]
+_C.MODEL.USE_AMP = True
 
 # Modality Information Embeddings
 _C.MODEL.MIE_COE = 3.0

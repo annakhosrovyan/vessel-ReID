@@ -151,7 +151,8 @@ def do_train(cfg,
             target = vid.to(device)
             target_cam = target_cam.to(device)
             img_wh = img_wh.to(device)
-            with amp.autocast(enabled=True):
+
+            with amp.autocast(enabled=cfg.MODEL.USE_AMP):
                 score, feat = model(img, target, cam_label=target_cam, img_wh=img_wh)
                 loss = loss_fn(score, feat, target, target_cam)
 

@@ -7,6 +7,7 @@ MODEL:
   DEVICE_ID: ('0')
   TRANSFORMER_TYPE: 'dinov3'
   STRIDE_SIZE: [16, 16]
+  USE_AMP: True
   MIE: False
   MIE_COE: 3.0
   SSE: False

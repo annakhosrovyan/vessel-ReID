@@ -1,25 +1,25 @@
 MODEL:
   PRETRAIN_CHOICE: 'imagenet'
-  PRETRAIN_PATH: '/nfs/h100/raid/rs/vessel_detection/weights/vit_b512_pre.pth'
   METRIC_LOSS_TYPE: 'triplet'
+  PRETRAIN_PATH: '/nfs/dgx/raid/rs/rs/channel_logs/May_2025/May02_12-55-28/checkpoint.pth'
   IF_LABELSMOOTH: 'off'
   IF_WITH_CENTER: 'no'
   NAME: 'transformer'
   NO_MARGIN: True
   DEVICE_ID: ('0')
-  TRANSFORMER_TYPE: 'vit_base_patch16_224_TransOSS'
+  TRANSFORMER_TYPE: 'chivit_base'
   STRIDE_SIZE: [16, 16]
-  USE_AMP: True
-  MIE: True
+  USE_AMP: False
+  MIE: False
   MIE_COE: 3.0
-  SSE: True
+  SSE: False
   PAIR: False
 
 INPUT:
-  SIZE_TRAIN: [256, 128]
-  SIZE_TEST: [256, 128]
-  PROB: 0.5 # random horizontal flip
-  RE_PROB: 0.5 # random erasing
+  SIZE_TRAIN: [224, 224]
+  SIZE_TEST: [224, 224]
+  PROB: 0.5
+  RE_PROB: 0.5
   PADDING: 10
   PIXEL_MEAN: [0.485, 0.456, 0.406]
   PIXEL_STD: [0.229, 0.224, 0.225]
@@ -35,7 +35,7 @@ DATALOADER:
   NUM_WORKERS: 8
 
 SOLVER:
-  OPTIMIZER_NAME: 'SGD'
+  OPTIMIZER_NAME: 'AdamW'
   MAX_EPOCHS: 200
   BASE_LR: 0.0005
   IMS_PER_BATCH: 32
@@ -45,7 +45,7 @@ SOLVER:
   LOG_PERIOD: 80
   EVAL_PERIOD: 1
   SEED: 42
-  WEIGHT_DECAY:  1e-4
+  WEIGHT_DECAY: 1e-4
   WEIGHT_DECAY_BIAS: 1e-4
   BIAS_LR_FACTOR: 2
 
@@ -57,4 +57,5 @@ TEST:
   NECK_FEAT: 'before'
   FEAT_NORM: 'yes'
 
-OUTPUT_DIR: './logs/hoss_transoss'
+OUTPUT_DIR: './logs/hoss_chi_vit'
+
