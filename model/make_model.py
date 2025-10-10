@@ -215,26 +215,19 @@ class build_transformer(nn.Module):
             B = x.shape[0]
             rgb_idx = torch.nonzero(cam_label == 0, as_tuple=True)[0]
             sar_idx = torch.nonzero(cam_label == 1, as_tuple=True)[0]
-            feats = [None] * B
+            
+            rgb_out = self.base(x[rgb_idx], channel_idxs=[0, 1, 2]) if rgb_idx.numel() > 0 else None
+            sar_out = self.base(x[sar_idx][:, :2, :, :], channel_idxs=[10, 11]) if sar_idx.numel() > 0 else None
+            
+            feat_shape = rgb_out.shape[1:] if rgb_out is not None else sar_out.shape[1:]
+            global_feat = torch.empty((B,) + feat_shape, dtype=x.dtype, device=x.device)
+            
             if rgb_idx.numel() > 0:
-                rgb_out = self.base(x[rgb_idx], channel_idxs=[0, 1, 2])
-                if isinstance(rgb_out, (tuple, list)):
-                    rgb_out = rgb_out[-1]
-                for i, idx in enumerate(rgb_idx.tolist()):
-                    feats[idx] = rgb_out[i]
+                global_feat[rgb_idx] = rgb_out
             if sar_idx.numel() > 0:
-                sar_input = x[sar_idx][:, :2, :, :]
-                sar_out = self.base(sar_input, channel_idxs=[10, 11])
-                if isinstance(sar_out, (tuple, list)):
-                    sar_out = sar_out[-1]
-                for i, idx in enumerate(sar_idx.tolist()):
-                    feats[idx] = sar_out[i]
-            global_feat = torch.stack(feats, dim=0)
+                global_feat[sar_idx] = sar_out
         else:
             global_feat = self.base(x, cam_label=cam_label, img_wh=img_wh)
-
-        if isinstance(global_feat, (tuple, list)):
-            global_feat = global_feat[-1]
 
         if self.training:
             if self.train_pair:
