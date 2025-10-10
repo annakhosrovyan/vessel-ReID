@@ -5,7 +5,8 @@ import torch
 import torch.nn as nn
 from utils.meter import AverageMeter
 from utils.metrics import R1_mAP_eval
-from torch.cuda import amp
+from torch.amp import autocast
+from torch.cuda.amp import GradScaler
 import torch.distributed as dist
 from loss import clip_loss
 import wandb
@@ -38,7 +39,7 @@ def do_train_pair(cfg,
     loss_meter = AverageMeter()
 
     evaluator = R1_mAP_eval(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM)
-    scaler = amp.GradScaler()
+    scaler = GradScaler()
 
     # train pair
     if cfg.MODEL.PAIR:
@@ -57,7 +58,7 @@ def do_train_pair(cfg,
                 img = img.to(device)
                 target = vid.to(device)
                 target_cam = target_cam.to(device)
-                with amp.autocast(enabled=True):
+                with autocast('cuda', enabled=True):
                     logits_per_sar = model(img, target, cam_label=target_cam)
                     loss = clip_loss(logits_per_sar)
 
@@ -123,7 +124,7 @@ def do_train(cfg,
     acc_meter = AverageMeter()
 
     evaluator = R1_mAP_eval(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM)
-    scaler = amp.GradScaler()
+    scaler = GradScaler()
 
     best_mAP = 0.0
     wandb.init(
@@ -152,7 +153,7 @@ def do_train(cfg,
             target_cam = target_cam.to(device)
             img_wh = img_wh.to(device)
 
-            with amp.autocast(enabled=cfg.MODEL.USE_AMP):
+            with autocast('cuda', enabled=cfg.MODEL.USE_AMP):
                 score, feat = model(img, target, cam_label=target_cam, img_wh=img_wh)
                 loss = loss_fn(score, feat, target, target_cam)
 
