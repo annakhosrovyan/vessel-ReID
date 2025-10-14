@@ -162,8 +162,6 @@ class build_transformer(nn.Module):
         self.base = model_class(**model_kwargs)
         print("pretrain_choice: ", pretrain_choice)
         if pretrain_choice == 'imagenet':
-            # Note: For DinoV3, this choice doesn't do anything as weights are loaded on init.
-            # For other models, it loads weights from PRETRAIN_PATH.
             if cfg.MODEL.PRETRAIN_PATH:
                 self.base.load_param(model_path)
                 print('Loading pretrained model......from {}'.format(model_path))
