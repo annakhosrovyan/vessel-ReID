@@ -191,3 +191,10 @@ _C.TEST.EVAL = True
 # ---------------------------------------------------------------------------- #
 # Path to checkpoint and saved log of trained model
 _C.OUTPUT_DIR = ""
+
+# ---------------------------------------------------------------------------- #
+# Weights & Biases
+# ---------------------------------------------------------------------------- #
+_C.WANDB = CN()
+_C.WANDB.PROJECT = "vessel-reidentification"
+_C.WANDB.NAME = ""

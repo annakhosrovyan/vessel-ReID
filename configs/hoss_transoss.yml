@@ -58,3 +58,7 @@ TEST:
   FEAT_NORM: 'yes'
 
 OUTPUT_DIR: './logs/hoss_transoss'
+
+WANDB:
+  PROJECT: 'vessel-reidentification'
+  NAME: 'transoss'

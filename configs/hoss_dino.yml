@@ -56,3 +56,7 @@ TEST:
   FEAT_NORM: 'yes'
 
 OUTPUT_DIR: './logs/hoss_dino'
+
+WANDB:
+  PROJECT: 'vessel-reidentification'
+  NAME: 'dino'

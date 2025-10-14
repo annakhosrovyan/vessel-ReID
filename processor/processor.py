@@ -128,8 +128,8 @@ def do_train(cfg,
 
     best_mAP = 0.0
     wandb.init(
-        project="vessel-reidentification",
-        name=f"opt{cfg.SOLVER.OPTIMIZER_NAME}_lr{cfg.SOLVER.BASE_LR}_wd{cfg.SOLVER.WEIGHT_DECAY}_warmup{cfg.SOLVER.WARMUP_EPOCHS}_sched{cfg.SOLVER.SCHEDULER_TYPE}_ep{cfg.SOLVER.MAX_EPOCHS}",
+        project=cfg.WANDB.PROJECT,
+        name=cfg.WANDB.NAME,
         config=cfg
     )
 
