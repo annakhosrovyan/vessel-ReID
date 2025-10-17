@@ -9,10 +9,12 @@ from .sampler_ddp import RandomIdentitySampler_DDP
 import torch.distributed as dist
 
 from .hoss import HOSS
+from .pretrain import Pretrain
 
 
 __factory = {
     'HOSS': HOSS,
+    'Pretrain': Pretrain,
 }
 
 
@@ -29,11 +31,10 @@ def train_pair_collate_fn(batch):
     rgb_batch = [i[0] for i in batch]
     sar_batch = [i[1] for i in batch]
     batch = rgb_batch + sar_batch
-    imgs, pids, camids, viewids , _, img_size = zip(*batch)
+    imgs, pids, camids, _, _ = zip(*batch)
     pids = torch.tensor(pids, dtype=torch.int64)
-    viewids = torch.tensor(viewids, dtype=torch.int64)
     camids = torch.tensor(camids, dtype=torch.int64)
-    return torch.stack(imgs, dim=0), pids, camids, viewids
+    return torch.stack(imgs, dim=0), pids, camids
 
 
 def val_collate_fn(batch):
@@ -127,36 +128,23 @@ def make_dataloader_pair(cfg):
             T.RandomCrop(cfg.INPUT.SIZE_TRAIN),
             T.ToTensor(),
             T.Normalize(mean=cfg.INPUT.PIXEL_MEAN, std=cfg.INPUT.PIXEL_STD),
-            RandomErasing(probability=cfg.INPUT.RE_PROB, mode='pixel', max_count=1, device='cpu'),
+            RandomErasing(probability=cfg.INPUT.RE_PROB, mode="pixel", max_count=1, device="cpu"),
             # RandomErasing(probability=cfg.INPUT.RE_PROB, mean=cfg.INPUT.PIXEL_MEAN)
-        ])
-
-    val_transforms = T.Compose([
-        T.Resize(cfg.INPUT.SIZE_TEST),
-        T.ToTensor(),
-        T.Normalize(mean=cfg.INPUT.PIXEL_MEAN, std=cfg.INPUT.PIXEL_STD)
-    ])
+        ]
+    )
 
     num_workers = cfg.DATALOADER.NUM_WORKERS
 
-    dataset = __factory[cfg.DATASETS.NAMES](root=cfg.DATASETS.ROOT_DIR, eval_mode=cfg.DATASETS.EVAL_MODE)
-    dataset_val = __factory['HOSS'](root='../dataset', eval_mode=cfg.DATASETS.EVAL_MODE)
+    dataset = __factory[cfg.DATASETS.NAMES](root=cfg.DATASETS.ROOT_DIR)
 
     train_set_pair = ImageDataset(dataset.train_pair, train_transforms, pair=True)
-    num_classes = dataset.num_train_pids
-    cam_num = dataset.num_train_cams
-
-    val_set = ImageDataset(dataset_val.query + dataset_val.gallery, val_transforms)
-
-    val_loader = DataLoader(
-        val_set, batch_size=cfg.TEST.IMS_PER_BATCH, shuffle=False, num_workers=num_workers,
-        collate_fn=val_collate_fn
-    )
+    num_classes = dataset.num_train_pair_pids
+    cam_num = dataset.num_train_pair_cams
 
     if cfg.SOLVER.IMS_PER_BATCH % 2 != 0:
-        raise ValueError('cfg.SOLVER.IMS_PER_BATCH should be even number')
+        raise ValueError("cfg.SOLVER.IMS_PER_BATCH should be even number")
     train_loader_pair = DataLoader(
-        train_set_pair, batch_size=int(cfg.SOLVER.IMS_PER_BATCH / 2), shuffle=True, num_workers=num_workers,
+        train_set_pair, batch_size=int(cfg.SOLVER.IMS_PER_BATCH / 2), shuffle=True, num_workers=num_workers, 
         collate_fn=train_pair_collate_fn
     )
-    return train_loader_pair, val_loader, len(dataset_val.query), num_classes, cam_num
+    return train_loader_pair, num_classes, cam_num

@@ -413,7 +413,7 @@ def resize_pos_embed(posemb, posemb_new, hight, width):
 
 def vit_base_patch16_224_TransOSS(img_size=(256, 128), stride_size=16, drop_rate=0.0, attn_drop_rate=0.0, drop_path_rate=0.1, camera=0, local_feature=False, mie_coe=1.5, sse=False, **kwargs):
     model = TransOSS(
-        img_size=img_size, patch_size=16, stride_size=stride_size, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,\
+        img_size=img_size, stride_size=stride_size, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,\
         camera=camera, drop_path_rate=drop_path_rate, drop_rate=drop_rate, attn_drop_rate=attn_drop_rate,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),  mie_coe=mie_coe, local_feature=local_feature, sse=sse, **kwargs)
 

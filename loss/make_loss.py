@@ -8,9 +8,16 @@ import torch.nn.functional as F
 from .softmax_loss import CrossEntropyLabelSmooth, LabelSmoothingCrossEntropy
 from .triplet_loss import TripletLoss
 from .center_loss import CenterLoss
+from .contrastive_loss import clip_loss
 
 
 def make_loss(cfg, num_classes):    # modified by gu
+    if cfg.MODEL.PAIR and cfg.MODEL.METRIC_LOSS_TYPE == 'clip':
+        def loss_func(logits_per_sar):
+            return clip_loss(logits_per_sar)
+        print("using CLIP loss (symmetric cross-entropy) for pretraining")
+        return loss_func, None
+    
     sampler = cfg.DATALOADER.SAMPLER
     feat_dim = 2048
     center_criterion = CenterLoss(num_classes=num_classes, feat_dim=feat_dim, use_gpu=True)  # center loss
