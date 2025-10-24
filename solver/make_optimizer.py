@@ -1,7 +1,7 @@
 import torch
 
 
-def make_optimizer(cfg, model, center_criterion):
+def make_optimizer(cfg, model, center_criterion=None):
     params = []
     for key, value in model.named_parameters():
         if not value.requires_grad:
@@ -24,6 +24,10 @@ def make_optimizer(cfg, model, center_criterion):
         optimizer = torch.optim.AdamW(params, lr=cfg.SOLVER.BASE_LR, weight_decay=cfg.SOLVER.WEIGHT_DECAY)
     else:
         optimizer = getattr(torch.optim, cfg.SOLVER.OPTIMIZER_NAME)(params)
-    optimizer_center = torch.optim.SGD(center_criterion.parameters(), lr=cfg.SOLVER.CENTER_LR)
+    
+    if center_criterion is not None:
+        optimizer_center = torch.optim.SGD(center_criterion.parameters(), lr=cfg.SOLVER.CENTER_LR)
+    else:
+        optimizer_center = None
 
     return optimizer, optimizer_center

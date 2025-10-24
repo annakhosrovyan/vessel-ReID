@@ -28,6 +28,14 @@ def do_train_pair(cfg,
     logger.info("start training")
     _LOCAL_PROCESS_GROUP = None
 
+    if local_rank == 0:
+        wandb.init(
+            project=cfg.WANDB.PROJECT,
+            name=cfg.WANDB.NAME,
+            config=cfg,
+            tags=["pretraining", "clip-loss", cfg.MODEL.TRANSFORMER_TYPE]
+        )
+
     if device:
         model.to(local_rank)
         if torch.cuda.device_count() > 1 and cfg.MODEL.DIST_TRAIN:
@@ -59,6 +67,25 @@ def do_train_pair(cfg,
 
                 scaler.scale(loss).backward()
 
+                # Gradient clipping to prevent explosion
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+                # Compute gradient norms before clipping
+                total_norm = 0.0
+                param_norm = 0.0
+                for p in model.parameters():
+                    if p.grad is not None:
+                        param_norm = p.grad.data.norm(2)
+                        total_norm += param_norm.item() ** 2
+                total_norm = total_norm ** (1. / 2)
+                
+                # Get logit_scale value for monitoring
+                if hasattr(model, 'module'):
+                    logit_scale = model.module.logit_scale.exp().item()
+                else:
+                    logit_scale = model.logit_scale.exp().item()
+
                 scaler.step(optimizer)
                 scaler.update()
 
@@ -67,10 +94,20 @@ def do_train_pair(cfg,
                 torch.cuda.synchronize()
                 if (n_iter + 1) % log_period == 0:
                     logger.info(
-                        "Epoch[{}] Iteration[{}/{}] Loss: {:.3f}, Base Lr: {:.2e}".format(
-                            epoch, (n_iter + 1), len(train_loader_pair), loss_meter.avg, scheduler._get_lr(epoch)[0]
+                        "Epoch[{}] Iteration[{}/{}] Loss: {:.3f}, Base Lr: {:.2e}, GradNorm: {:.3f}, LogitScale: {:.3f}".format(
+                            epoch, (n_iter + 1), len(train_loader_pair), loss_meter.avg, 
+                            scheduler._get_lr(epoch)[0], total_norm, logit_scale
                         )
                     )
+                    if local_rank == 0:
+                        wandb.log({
+                            "train/clip_loss": loss_meter.avg,
+                            "train/lr": optimizer.param_groups[0]['lr'],
+                            "train/epoch": epoch,
+                            "train/grad_norm": total_norm,
+                            "train/logit_scale": logit_scale,
+                            "train/scaler_scale": scaler.get_scale(),
+                        })
 
             end_time = time.time()
             time_per_batch = (end_time - start_time) / (n_iter + 1)
@@ -86,9 +123,29 @@ def do_train_pair(cfg,
             if epoch % checkpoint_period == 0:
                 if cfg.MODEL.DIST_TRAIN:
                     if dist.get_rank() == 0:
-                        torch.save(model.state_dict(), os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_{}.pth".format(epoch)))
+                        checkpoint = {
+                            'epoch': epoch,
+                            'model_state_dict': model.state_dict(),
+                            'optimizer_state_dict': optimizer.state_dict(),
+                            'scheduler_state_dict': scheduler.state_dict(),
+                            'loss': loss_meter.avg,
+                        }
+                        torch.save(checkpoint, os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_checkpoint_{}.pth".format(epoch)))
+                        torch.save(checkpoint, os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_checkpoint_latest.pth"))
                 else:
-                    torch.save(model.state_dict(), os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_{}.pth".format(epoch)))
+                    checkpoint = {
+                        'epoch': epoch,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'scheduler_state_dict': scheduler.state_dict(),
+                        'loss': loss_meter.avg,
+                    }
+                    torch.save(checkpoint, os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_checkpoint_{}.pth".format(epoch)))
+                    torch.save(checkpoint, os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_checkpoint_latest.pth"))
+        
+        if local_rank == 0:
+            wandb.finish()
+            logger.info("Pretraining completed. Wandb run finished.")
 
 
 

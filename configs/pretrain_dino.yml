@@ -34,11 +34,18 @@ SOLVER:
   BASE_LR: 0.003
   IMS_PER_BATCH: 512
   WARMUP_METHOD: 'linear'
+  WARMUP_EPOCHS: 5
+  SCHEDULER_TYPE: 'cosine'
   LARGE_FC_LR: False
   CHECKPOINT_PERIOD: 5
   LOG_PERIOD: 100
   WEIGHT_DECAY:  1e-4
   WEIGHT_DECAY_BIAS: 1e-4
   BIAS_LR_FACTOR: 2
+  SEED: 42
 
-OUTPUT_DIR: './logs/pretrain_dino_v3'
+OUTPUT_DIR: '/nfs/dgx/raid/rs/rs/vessel_re_id/checkpoints/pretrain_dino_v3'
+
+WANDB:
+  PROJECT: 'vessel-reid-pretraining'
+  NAME: 'pretrain-dino'
