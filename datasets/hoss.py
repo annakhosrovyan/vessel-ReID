@@ -9,7 +9,7 @@ class HOSS(BaseImageDataset):
     s2o_dir = 'subset/S2O'
     o2s_dir = 'subset/O2S'
     
-    def __init__(self, root='', verbose=True, pid_begin = 0, eval_mode='all', **kwargs):
+    def __init__(self, root='/nfs/h100/raid/rs/vessel_detection', verbose=True, pid_begin = 0, eval_mode='all', **kwargs):
         super(HOSS, self).__init__()
         self.dataset_dir = osp.join(root, self.dataset_dir)
         self.s2o_dir = osp.join(self.dataset_dir, self.s2o_dir)

@@ -1,13 +1,42 @@
-import logging
 import os
 import time
 import torch
+import wandb
+import logging
 import torch.nn as nn
+import torch.distributed as dist
+import torchvision.transforms as T
+
+from datasets.hoss import HOSS
 from utils.meter import AverageMeter
 from utils.metrics import R1_mAP_eval
+from datasets.bases import ImageDataset
+from torch.utils.data import DataLoader
 from torch.amp import GradScaler, autocast
-import torch.distributed as dist
-import wandb
+from datasets.make_dataloader import val_collate_fn
+from processor.validation_metrics_tracker import ValidationMetricsTracker
+
+
+def _setup_validation_dataloader(cfg):
+    if not cfg.SOLVER.TRACK_VALIDATION_METRICS:
+        return None, 0
+
+    val_transforms = T.Compose([
+        T.Resize(cfg.INPUT.SIZE_TEST),
+        T.ToTensor(),
+        T.Normalize(mean=cfg.INPUT.PIXEL_MEAN, std=cfg.INPUT.PIXEL_STD)
+    ])
+        
+    val_ds = HOSS()
+            
+    val_set = ImageDataset(val_ds.query_val + val_ds.gallery_val, val_transforms)
+    val_loader = DataLoader(
+        val_set, batch_size=cfg.TEST.IMS_PER_BATCH, shuffle=False, num_workers=cfg.DATALOADER.NUM_WORKERS,
+        collate_fn=val_collate_fn
+    )
+    num_query_val = len(val_ds.query_val)
+
+    return val_loader, num_query_val
 
 
 def do_train_pair(cfg, 
@@ -20,6 +49,7 @@ def do_train_pair(cfg,
             ):
     log_period = cfg.SOLVER.LOG_PERIOD
     checkpoint_period = cfg.SOLVER.CHECKPOINT_PERIOD
+    eval_period = cfg.SOLVER.EVAL_PERIOD
 
     device = "cuda"
     epochs = cfg.SOLVER.MAX_EPOCHS
@@ -35,6 +65,9 @@ def do_train_pair(cfg,
             config=cfg,
             tags=["pretraining", "clip-loss", cfg.MODEL.TRANSFORMER_TYPE]
         )
+
+    val_loader, num_query_val = _setup_validation_dataloader(cfg)
+    validation_metrics_tracker = ValidationMetricsTracker(cfg, local_rank)
 
     if device:
         model.to(local_rank)
@@ -143,9 +176,8 @@ def do_train_pair(cfg,
                     torch.save(checkpoint, os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_checkpoint_{}.pth".format(epoch)))
                     torch.save(checkpoint, os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_checkpoint_latest.pth"))
         
-        if local_rank == 0:
-            wandb.finish()
-            logger.info("Pretraining completed. Wandb run finished.")
+            if epoch % eval_period == 0 and cfg.SOLVER.TRACK_VALIDATION_METRICS:
+                validation_metrics_tracker.run(model=model, epoch=epoch, val_loader=val_loader, num_query_val=num_query_val)
 
 
 
@@ -170,6 +202,8 @@ def do_train(cfg,
     logger.info('start training')
     _LOCAL_PROCESS_GROUP = None
 
+    validation_metrics_tracker = ValidationMetricsTracker(cfg, local_rank)
+
     if device:
         model.to(local_rank)
         if torch.cuda.device_count() > 1 and cfg.MODEL.DIST_TRAIN:
@@ -183,11 +217,12 @@ def do_train(cfg,
     scaler = GradScaler()
 
     best_mAP = 0.0
-    wandb.init(
-        project=cfg.WANDB.PROJECT,
-        name=cfg.WANDB.NAME,
-        config=cfg
-    )
+    if wandb.run is None:   # prevent wandb from initializing multiple times during pretraining
+        wandb.init(
+            project=cfg.WANDB.PROJECT,
+            name=cfg.WANDB.NAME,
+            config=cfg
+        )
 
     # train
     if torch.cuda.device_count() > 1 and cfg.MODEL.DIST_TRAIN:
@@ -266,41 +301,41 @@ def do_train(cfg,
                             img_wh = img_wh.to(device)
                             feat = model(img, cam_label=camids, view_label=target_view, img_wh=img_wh)
                             evaluator.update((feat, vid, camid))
-                    cmc, mAP, _, _, _, _, _ = evaluator.compute()
+                    cmc, mAP, distmat, pids, camids, _, _ = evaluator.compute()
+
+                    if cfg.SOLVER.TRACK_VALIDATION_METRICS:
+                        validation_metrics_tracker.log_distance_stats(distmat, pids, camids, evaluator.num_query)
+
                     logger.info("Validation Results - Epoch: {}".format(epoch))
                     logger.info("mAP: {:.1%}".format(mAP))
                     for r in [1, 5, 10]:
                         logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
-                    
-                    if mAP > best_mAP:
-                        best_mAP = mAP
-                        torch.save(model.state_dict(),
-                                   os.path.join(cfg.OUTPUT_DIR, 'best_model.pth'))
-                        logger.info("New best model saved with mAP: {:.1%} at epoch {}".format(best_mAP, epoch))
-                    
-                    torch.cuda.empty_cache()
-            else:
-                model.eval()
-                for n_iter, (img, vid, camid, camids, target_view, _, img_wh) in enumerate(val_loader):
-                    with torch.no_grad():
-                        img = img.to(device)
-                        camids = camids.to(device)
-                        img_wh = img_wh.to(device)
-                        feat = model(img, cam_label=camids, img_wh=img_wh)
-                        evaluator.update((feat, vid, camid))
-                cmc, mAP, _, _, _, _, _ = evaluator.compute()
-                logger.info("Validation Results - Epoch: {}".format(epoch))
-                logger.info("mAP: {:.1%}".format(mAP))
-                for r in [1, 5, 10]:
-                    logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
-                
-                if mAP > best_mAP:
-                    best_mAP = mAP
-                    torch.save(model.state_dict(),
-                               os.path.join(cfg.OUTPUT_DIR, 'best_model.pth'))
-                    logger.info("New best model saved with mAP: {:.1%} at epoch {}".format(best_mAP, epoch))
-                
-                torch.cuda.empty_cache()
+                else:
+                    model.eval()
+                    for n_iter, (img, vid, camid, camids, target_view, _, img_wh) in enumerate(val_loader):
+                        with torch.no_grad():
+                            img = img.to(device)
+                            camids = camids.to(device)
+                            target_view = target_view.to(device)
+                            img_wh = img_wh.to(device)
+                            feat = model(img, cam_label=camids, view_label=target_view, img_wh=img_wh)
+                            evaluator.update((feat, vid, camid))
+                    cmc, mAP, distmat, pids, camids, _, _ = evaluator.compute()
+
+                    if cfg.SOLVER.TRACK_VALIDATION_METRICS:
+                        validation_metrics_tracker.log_distance_stats(distmat, pids, camids, evaluator.num_query)
+
+                    logger.info("Validation Results - Epoch: {}".format(epoch))
+                    logger.info("mAP: {:.1%}".format(mAP))
+                    for r in [1, 5, 10]:
+                        logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
+
+            mAP = validation_metrics_tracker.run(model=model, epoch=epoch, val_loader=val_loader, num_query_val=num_query)
+            if local_rank == 0 and mAP > best_mAP:
+                best_mAP = mAP
+                torch.save(model.state_dict(),
+                           os.path.join(cfg.OUTPUT_DIR, 'best_model.pth'))
+                logger.info("New best model saved with mAP: {:.1%} at epoch {}".format(best_mAP, epoch))
 
             wandb.log({
                 "epoch": epoch,
