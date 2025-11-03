@@ -310,33 +310,50 @@ def do_train(cfg,
                     logger.info("mAP: {:.1%}".format(mAP))
                     for r in [1, 5, 10]:
                         logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
-                else:
-                    model.eval()
-                    for n_iter, (img, vid, camid, camids, target_view, _, img_wh) in enumerate(val_loader):
-                        with torch.no_grad():
-                            img = img.to(device)
-                            camids = camids.to(device)
-                            target_view = target_view.to(device)
-                            img_wh = img_wh.to(device)
-                            feat = model(img, cam_label=camids, view_label=target_view, img_wh=img_wh)
-                            evaluator.update((feat, vid, camid))
-                    cmc, mAP, distmat, pids, camids, _, _ = evaluator.compute()
+                    
+                    if mAP > best_mAP:
+                        best_mAP = mAP
+                        torch.save(model.state_dict(),
+                                   os.path.join(cfg.OUTPUT_DIR, 'best_model.pth'))
+                        logger.info("New best model saved with mAP: {:.1%} at epoch {}".format(best_mAP, epoch))
+                    
+                    torch.cuda.empty_cache()
+            else:
+                model.eval()
+                for n_iter, (img, vid, camid, camids, target_view, _, img_wh) in enumerate(val_loader):
+                    with torch.no_grad():
+                        img = img.to(device)
+                        camids = camids.to(device)
+                        img_wh = img_wh.to(device)
+                        feat = model(img, cam_label=camids, img_wh=img_wh)
+                        evaluator.update((feat, vid, camid))
+                cmc, mAP, distmat, pids, camids, _, _ = evaluator.compute()
 
-                    if cfg.SOLVER.TRACK_VALIDATION_METRICS:
-                        validation_metrics_tracker.log_distance_stats(distmat, pids, camids, evaluator.num_query)
+                if cfg.SOLVER.TRACK_VALIDATION_METRICS:
+                    validation_metrics_tracker.log_distance_stats(distmat, pids, camids, evaluator.num_query)
 
-                    logger.info("Validation Results - Epoch: {}".format(epoch))
-                    logger.info("mAP: {:.1%}".format(mAP))
-                    for r in [1, 5, 10]:
-                        logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
+                logger.info("Validation Results - Epoch: {}".format(epoch))
+                logger.info("mAP: {:.1%}".format(mAP))
+                for r in [1, 5, 10]:
+                    logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
+                
+                if mAP > best_mAP:
+                    best_mAP = mAP
+                    torch.save(model.state_dict(),
+                               os.path.join(cfg.OUTPUT_DIR, 'best_model.pth'))
+                    logger.info("New best model saved with mAP: {:.1%} at epoch {}".format(best_mAP, epoch))
+                
+                torch.cuda.empty_cache()
 
-            mAP = validation_metrics_tracker.run(model=model, epoch=epoch, val_loader=val_loader, num_query_val=num_query)
-            if local_rank == 0 and mAP > best_mAP:
-                best_mAP = mAP
-                torch.save(model.state_dict(),
-                           os.path.join(cfg.OUTPUT_DIR, 'best_model.pth'))
-                logger.info("New best model saved with mAP: {:.1%} at epoch {}".format(best_mAP, epoch))
+            if local_rank == 0:
+                wandb.log({
+                    "val_mAP": mAP,
+                    "val_rank1": cmc[0],
+                    "val_rank5": cmc[4],
+                    "val_rank10": cmc[9]
+                })
 
+        if local_rank == 0:
             wandb.log({
                 "epoch": epoch,
                 "train_loss": loss_meter.avg,
@@ -344,14 +361,8 @@ def do_train(cfg,
                 "learning_rate": scheduler.get_last_lr()[0]
             })
 
-            wandb.log({
-                "val_mAP": mAP,
-                "val_rank1": cmc[0],
-                "val_rank5": cmc[4],
-                "val_rank10": cmc[9]
-            })
-
-    wandb.finish()
+    if local_rank == 0:
+        wandb.finish()
 
     logger.info("Training completed. Best mAP: {:.1%}".format(best_mAP))
 
