@@ -166,6 +166,8 @@ _C.SOLVER.EVAL_PERIOD = 10
 # contain 16 images per batch
 _C.SOLVER.IMS_PER_BATCH = 64
 _C.SOLVER.TRACK_VALIDATION_METRICS = True
+_C.SOLVER.TRACK_VALIDATION_METRICS_OPTISAR = True
+_C.SOLVER.PRETRAIN_TRACK_VALIDATION_DIR = ''
 
 # ---------------------------------------------------------------------------- #
 # TEST

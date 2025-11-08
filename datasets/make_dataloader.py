@@ -45,6 +45,28 @@ def val_collate_fn(batch):
     return torch.stack(imgs, dim=0), pids, camids, camids_batch, viewids, img_paths, img_size
 
 
+def val_pair_collate_fn(batch):
+    batch_img1 = []
+    batch_img2 = []
+    for item in batch:
+        batch_img1.append(item[0])
+        batch_img2.append(item[1])
+    
+    imgs1, pids1, camids1, _, img_size1 = zip(*batch_img1)
+    imgs2, _, camids2, _, img_size2 = zip(*batch_img2)
+
+    pids = torch.tensor(pids1, dtype=torch.int64)
+    camids1 = torch.tensor(camids1, dtype=torch.int64)
+    camids2 = torch.tensor(camids2, dtype=torch.int64)
+    img_size1 = torch.tensor(img_size1, dtype=torch.float32)
+    img_size2 = torch.tensor(img_size2, dtype=torch.float32)
+
+    return (
+        (torch.stack(imgs1, dim=0), pids, camids1, _, img_size1),
+        (torch.stack(imgs2, dim=0), pids, camids2, _, img_size2),
+    )
+
+
 def make_dataloader(cfg):
     train_transforms = T.Compose([
             T.Resize(cfg.INPUT.SIZE_TRAIN, interpolation=3),

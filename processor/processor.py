@@ -8,35 +8,46 @@ import torch.distributed as dist
 import torchvision.transforms as T
 
 from datasets.hoss import HOSS
+from datasets.optisar_pair_val import OptiSarPairVal
 from utils.meter import AverageMeter
 from utils.metrics import R1_mAP_eval
 from datasets.bases import ImageDataset
 from torch.utils.data import DataLoader
-from torch.amp import GradScaler, autocast
-from datasets.make_dataloader import val_collate_fn
+from torch.amp import autocast, GradScaler
 from processor.validation_metrics_tracker import ValidationMetricsTracker
+from datasets.make_dataloader import val_pair_collate_fn, val_collate_fn
+
 
 
 def _setup_validation_dataloader(cfg):
-    if not cfg.SOLVER.TRACK_VALIDATION_METRICS:
-        return None, 0
-
+    val_loader_hoss, num_query_hoss, val_loader_optisar_pair = None, 0, None
+    
     val_transforms = T.Compose([
         T.Resize(cfg.INPUT.SIZE_TEST),
         T.ToTensor(),
         T.Normalize(mean=cfg.INPUT.PIXEL_MEAN, std=cfg.INPUT.PIXEL_STD)
     ])
         
-    val_ds = HOSS()
-            
-    val_set = ImageDataset(val_ds.query_val + val_ds.gallery_val, val_transforms)
-    val_loader = DataLoader(
-        val_set, batch_size=cfg.TEST.IMS_PER_BATCH, shuffle=False, num_workers=cfg.DATALOADER.NUM_WORKERS,
-        collate_fn=val_collate_fn
-    )
-    num_query_val = len(val_ds.query_val)
+    if cfg.SOLVER.TRACK_VALIDATION_METRICS:
+        val_ds = HOSS()
+        val_set_hoss = ImageDataset(val_ds.query_val + val_ds.gallery_val, val_transforms)
+        val_loader_hoss = DataLoader(
+            val_set_hoss, batch_size=cfg.TEST.IMS_PER_BATCH, shuffle=False, num_workers=cfg.DATALOADER.NUM_WORKERS,
+            collate_fn=val_collate_fn
+        )
+        num_query_hoss = len(val_ds.query_val)
 
-    return val_loader, num_query_val
+    if cfg.SOLVER.TRACK_VALIDATION_METRICS_OPTISAR:
+        if cfg.SOLVER.IMS_PER_BATCH % 2 != 0:
+            raise ValueError("cfg.SOLVER.IMS_PER_BATCH should be even number")
+        dataset_optisar = OptiSarPairVal(root=cfg.SOLVER.PRETRAIN_TRACK_VALIDATION_DIR)
+        val_set_optisar_pretrain = ImageDataset(dataset_optisar.train_pair, val_transforms, pair=True)
+        val_loader_optisar_pair = DataLoader(
+            val_set_optisar_pretrain, batch_size=int(cfg.SOLVER.IMS_PER_BATCH / 2), shuffle=True, num_workers=cfg.DATALOADER.NUM_WORKERS, 
+            collate_fn=val_pair_collate_fn
+        )
+
+    return val_loader_hoss, num_query_hoss, val_loader_optisar_pair
 
 
 def do_train_pair(cfg, 
@@ -66,7 +77,7 @@ def do_train_pair(cfg,
             tags=["pretraining", "clip-loss", cfg.MODEL.TRANSFORMER_TYPE]
         )
 
-    val_loader, num_query_val = _setup_validation_dataloader(cfg)
+    val_loader_hoss, num_query_hoss, val_loader_optisar_pair = _setup_validation_dataloader(cfg)
     validation_metrics_tracker = ValidationMetricsTracker(cfg, local_rank)
 
     if device:
@@ -176,8 +187,11 @@ def do_train_pair(cfg,
                     torch.save(checkpoint, os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_checkpoint_{}.pth".format(epoch)))
                     torch.save(checkpoint, os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_checkpoint_latest.pth"))
         
-            if epoch % eval_period == 0 and cfg.SOLVER.TRACK_VALIDATION_METRICS:
-                validation_metrics_tracker.run(model=model, epoch=epoch, val_loader=val_loader, num_query_val=num_query_val)
+            if epoch % eval_period == 0:
+                if val_loader_hoss is not None:
+                    validation_metrics_tracker.run(model=model, epoch=epoch, val_loader=val_loader_hoss, num_query_val=num_query_hoss)
+                if val_loader_optisar_pair is not None:
+                    validation_metrics_tracker.run_pair(model, epoch, val_loader_optisar_pair, collection_name='optisar')
 
 
 
@@ -202,6 +216,7 @@ def do_train(cfg,
     logger.info('start training')
     _LOCAL_PROCESS_GROUP = None
 
+    _, _, val_loader_optisar_pair = _setup_validation_dataloader(cfg)
     validation_metrics_tracker = ValidationMetricsTracker(cfg, local_rank)
 
     if device:
@@ -303,8 +318,11 @@ def do_train(cfg,
                             evaluator.update((feat, vid, camid))
                     cmc, mAP, distmat, pids, camids, _, _ = evaluator.compute()
 
-                    if cfg.SOLVER.TRACK_VALIDATION_METRICS:
-                        validation_metrics_tracker.log_distance_stats(distmat, pids, camids, evaluator.num_query)
+                    if val_loader is not None:
+                        validation_metrics_tracker.log_distance_stats(distmat, pids, camids, evaluator.num_query, collection_name='val')
+                    
+                    if val_loader_optisar_pair is not None:
+                        validation_metrics_tracker.run_pair(model, epoch, val_loader_optisar_pair, collection_name='optisar')
 
                     logger.info("Validation Results - Epoch: {}".format(epoch))
                     logger.info("mAP: {:.1%}".format(mAP))
@@ -330,7 +348,9 @@ def do_train(cfg,
                 cmc, mAP, distmat, pids, camids, _, _ = evaluator.compute()
 
                 if cfg.SOLVER.TRACK_VALIDATION_METRICS:
-                    validation_metrics_tracker.log_distance_stats(distmat, pids, camids, evaluator.num_query)
+                    validation_metrics_tracker.log_distance_stats(distmat, pids, camids, evaluator.num_query, collection_name='hoss')
+                    if val_loader_optisar_pair is not None:
+                        validation_metrics_tracker.run_pair(model, epoch, val_loader_optisar_pair, collection_name='optisar')
 
                 logger.info("Validation Results - Epoch: {}".format(epoch))
                 logger.info("mAP: {:.1%}".format(mAP))

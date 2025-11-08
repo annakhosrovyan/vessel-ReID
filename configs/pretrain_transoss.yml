@@ -45,6 +45,8 @@ SOLVER:
   WEIGHT_DECAY_BIAS: 1e-4
   BIAS_LR_FACTOR: 2
   SEED: 42
+  PRETRAIN_TRACK_VALIDATION_DIR: '/nfs/dgx/raid/rs/rs/vessel_re_id/'
+
 
 OUTPUT_DIR: '/nfs/dgx/raid/rs/rs/vessel_re_id/checkpoints/pretrain_transoss'
 

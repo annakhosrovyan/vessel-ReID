@@ -5,6 +5,24 @@ import numpy as np
 from utils.metrics import R1_mAP_eval
 
 
+def compute_stats(vals: np.ndarray) -> dict:
+    if vals.size == 0:
+        return {
+            "mean": float("nan"),
+            "max": float("nan"),
+            "min": float("nan"),
+            "std": float("nan"),
+            "median": float("nan"),
+        }
+    return {
+        "mean": float(np.mean(vals)),
+        "max": float(np.max(vals)),
+        "min": float(np.min(vals)),
+        "std": float(np.std(vals)),
+        "median": float(np.median(vals)),
+    }
+
+
 def compute_pair_distance_stats(distmat: np.ndarray, 
                                 q_pids: np.ndarray, 
                                 g_pids: np.ndarray, 
@@ -38,18 +56,9 @@ def compute_pair_distance_stats(distmat: np.ndarray,
     for k, m in masks.items():
         vals = distmat[m]
         stats[f"{k}_count"] = int(vals.size)
-        if vals.size == 0:
-            stats[f"{k}_mean"] = float("nan")
-            stats[f"{k}_max"] = float("nan")
-            stats[f"{k}_min"] = float("nan")
-            stats[f"{k}_std"] = float("nan")
-            stats[f"{k}_median"] = float("nan")
-        else:
-            stats[f"{k}_mean"] = float(np.mean(vals))
-            stats[f"{k}_max"] = float(np.max(vals))
-            stats[f"{k}_min"] = float(np.min(vals))
-            stats[f"{k}_std"] = float(np.std(vals))
-            stats[f"{k}_median"] = float(np.median(vals))
+        val_stats = compute_stats(vals)
+        for stat_name, stat_val in val_stats.items():
+            stats[f"{k}_{stat_name}"] = stat_val
     return stats
 
 
@@ -81,9 +90,57 @@ class ValidationMetricsTracker:
         self.log_metrics(epoch, mAP, cmc)
 
         if self.cfg.SOLVER.TRACK_VALIDATION_METRICS:
-            self.log_distance_stats(distmat, pids, camids, evaluator.num_query)
+            self.log_distance_stats(distmat, pids, camids, evaluator.num_query, collection_name='hoss')
             
         return mAP
+
+    def run_pair(self, model, epoch, val_loader=None, collection_name='pretrain'):
+        if val_loader is None or self.local_rank != 0:
+            return 0.0
+        
+        self.logger.info(f"Epoch {epoch}    tracking validation metrics for pairs...")
+
+        model.eval()
+        feats1_list, feats2_list = [], []
+        pids_list, camids1_list, camids2_list = [], [], []
+        for _, batch in enumerate(val_loader):
+            with torch.no_grad():
+                
+                img1, pids1, camid1, _, img_wh1 = batch[0]
+                img2, _, camid2, _, img_wh2 = batch[1]
+
+                img1 = img1.to("cuda")
+                camid1 = camid1.to("cuda")
+                img_wh1 = img_wh1.to("cuda")
+
+                img2 = img2.to("cuda")
+                camid2 = camid2.to("cuda")
+                img_wh2 = img_wh2.to("cuda")
+
+                pids_list.extend(pids1)
+                camids1_list.append(camid1)
+                camids2_list.append(camid2)
+
+                feat1 = model(img1, cam_label=camid1, img_wh=img_wh1)
+                feat2 = model(img2, cam_label=camid2, img_wh=img_wh2)
+                
+                feats1_list.append(feat1)
+                feats2_list.append(feat2)
+
+        q_feats = torch.cat(feats1_list, dim=0)
+        g_feats = torch.cat(feats2_list, dim=0)
+        distmat = torch.cdist(q_feats, g_feats).cpu().numpy()
+        
+        q_pids = np.array(pids_list)
+        g_pids = np.array(pids_list)
+        q_camids = torch.cat(camids1_list, dim=0).cpu().numpy()
+        g_camids = torch.cat(camids2_list, dim=0).cpu().numpy()
+        
+        pids = np.concatenate([q_pids, g_pids])
+        camids = np.concatenate([q_camids, g_camids])
+        q_count = len(q_pids)
+
+        self.log_distance_stats(distmat, pids, camids, q_count, collection_name=collection_name)
 
     def log_metrics(self, epoch, mAP, cmc):
         self.logger.info(f"Validation Results - Epoch: {epoch}")
@@ -98,12 +155,13 @@ class ValidationMetricsTracker:
             "val/rank10": cmc[9],
         })
 
-    def log_distance_stats(self, distmat, pids, camids, q_count):
+    def log_distance_stats(self, distmat, pids, camids, q_count, collection_name='val'):
         q_pids = np.asarray(pids[:q_count])
         g_pids = np.asarray(pids[q_count:])
         q_camids = np.asarray(camids[:q_count])
         g_camids = np.asarray(camids[q_count:])
 
-        pair_stats = compute_pair_distance_stats(distmat, q_pids, g_pids, q_camids, g_camids)
-        self.logger.info(f"Pair distance stats: {pair_stats}")
-        wandb.log({f"val/pair_distance_stats/{k}": v for k, v in pair_stats.items()})
+        stats = compute_pair_distance_stats(distmat, q_pids, g_pids, q_camids, g_camids)
+        wandb.log({
+            f"{collection_name}/{k}": v for k, v in stats.items()
+        })
