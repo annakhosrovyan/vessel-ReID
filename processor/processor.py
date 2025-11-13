@@ -10,6 +10,7 @@ import torchvision.transforms as T
 from datasets.hoss import HOSS
 from datasets.optisar_pair_val import OptiSarPairVal
 from utils.meter import AverageMeter
+from utils.wandb_utils import configure_wandb_metrics
 from utils.metrics import R1_mAP_eval
 from datasets.bases import ImageDataset
 from torch.utils.data import DataLoader
@@ -76,6 +77,7 @@ def do_train_pair(cfg,
             config=cfg,
             tags=["pretraining", "clip-loss", cfg.MODEL.TRANSFORMER_TYPE]
         )
+        configure_wandb_metrics()
 
     val_loader_hoss, num_query_hoss, val_loader_optisar_pair = _setup_validation_dataloader(cfg)
     validation_metrics_tracker = ValidationMetricsTracker(cfg, local_rank)
@@ -99,13 +101,15 @@ def do_train_pair(cfg,
             start_time = time.time()
             loss_meter.reset()
             scheduler.step(epoch)
+            if hasattr(train_loader_pair, "sampler") and hasattr(train_loader_pair.sampler, "set_epoch"):
+                train_loader_pair.sampler.set_epoch(epoch)
             model.train()
             for n_iter, (img, vid, target_cam) in enumerate(train_loader_pair):
                 optimizer.zero_grad()
                 img = img.to(device)
                 target = vid.to(device)
                 target_cam = target_cam.to(device)
-                with autocast('cuda', enabled=True):
+                with autocast('cuda', enabled=cfg.MODEL.USE_AMP):
                     logits_per_sar = model(img, target, cam_label=target_cam)
                     loss = loss_func(logits_per_sar)
 
@@ -238,6 +242,7 @@ def do_train(cfg,
             name=cfg.WANDB.NAME,
             config=cfg
         )
+        configure_wandb_metrics()
 
     # train
     if torch.cuda.device_count() > 1 and cfg.MODEL.DIST_TRAIN:
@@ -367,6 +372,7 @@ def do_train(cfg,
 
             if local_rank == 0:
                 wandb.log({
+                    "epoch": epoch,
                     "val_mAP": mAP,
                     "val_rank1": cmc[0],
                     "val_rank5": cmc[4],

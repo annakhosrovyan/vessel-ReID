@@ -2,7 +2,7 @@ import torch
 import wandb
 import logging
 import numpy as np
-from utils.metrics import R1_mAP_eval
+from utils.metrics import R1_mAP_eval, euclidean_distance
 
 
 def compute_stats(vals: np.ndarray) -> dict:
@@ -129,7 +129,10 @@ class ValidationMetricsTracker:
 
         q_feats = torch.cat(feats1_list, dim=0)
         g_feats = torch.cat(feats2_list, dim=0)
-        distmat = torch.cdist(q_feats, g_feats).cpu().numpy()
+        if str(self.cfg.TEST.FEAT_NORM).lower() in ("yes","true","1","y","t","on"):
+            q_feats = torch.nn.functional.normalize(q_feats, dim=1, p=2)
+            g_feats = torch.nn.functional.normalize(g_feats, dim=1, p=2)
+        distmat = euclidean_distance(q_feats, g_feats)
         
         q_pids = np.array(pids_list)
         g_pids = np.array(pids_list)
@@ -149,6 +152,7 @@ class ValidationMetricsTracker:
             self.logger.info(f"CMC curve, Rank-{r:<3}:{cmc[r - 1]:.1%}")
 
         wandb.log({
+            "val/epoch": epoch,
             "val/mAP": mAP,
             "val/rank1": cmc[0],
             "val/rank5": cmc[4],

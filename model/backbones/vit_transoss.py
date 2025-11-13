@@ -371,23 +371,22 @@ class TransOSS(nn.Module):
             if 'head' in k or 'dist' in k:
                 continue
             if 'patch_embed.proj.weight' in k and len(v.shape) < 4:
-                # For old models that I trained prior to conv based patchification
                 O, I, H, W = self.patch_embed.proj.weight.shape
                 v = v.reshape(O, -1, H, W)
             elif k == 'pos_embed' and v.shape != self.pos_embed.shape:
-                # To resize pos embedding when using model at different size from pretrained weights
                 if 'distilled' in model_path:
                     print('distill need to choose right cls token in the pth')
                     v = torch.cat([v[:, 0:1], v[:, 2:]], dim=1)
                 v = resize_pos_embed(v, self.pos_embed, self.patch_embed.num_y, self.patch_embed.num_x)
             try:
-                self.state_dict()[k].copy_(v)
-            except:
+                if isinstance(v, torch.Tensor):
+                    if k in self.state_dict() and self.state_dict()[k].shape == v.shape:
+                        self.state_dict()[k].copy_(v)
+                    else:
+                        pass
+            except Exception as e:
                 print('===========================ERROR=========================')
-                if 'mie_embed' in k:
-                    print(f'{k} not in the model')
-                    continue
-                print('shape do not match in k :{}: param_dict{} vs self.state_dict(){}'.format(k, v.shape, self.state_dict()[k].shape))
+                print(f"Error loading parameter {k}: {e}")
         if 'patch_embed_SAR.proj.bias' not in param_dict.keys():
             print('patch_embed_SAR not in the pth')
             self.state_dict()['patch_embed_SAR.proj.bias'].copy_(self.state_dict()['patch_embed.proj.bias'])

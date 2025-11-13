@@ -12,6 +12,7 @@ MODEL:
   PAIR: True
   DIST_TRAIN: True
   METRIC_LOSS_TYPE: 'clip' 
+  USE_AMP: True
 
 INPUT:
   SIZE_TRAIN: [256, 128]

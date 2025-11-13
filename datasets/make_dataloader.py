@@ -1,21 +1,29 @@
 import torch
-import torchvision.transforms as T
-from torch.utils.data import DataLoader
-
-from .bases import ImageDataset
-from timm.data.random_erasing import RandomErasing
-from .sampler import RandomIdentitySampler
-from .sampler_ddp import RandomIdentitySampler_DDP
+import random
+import numpy as np
 import torch.distributed as dist
+import torchvision.transforms as T
 
 from .hoss import HOSS
 from .pretrain import Pretrain
+from .bases import ImageDataset
+from torch.utils.data import DataLoader
+from .sampler import RandomIdentitySampler
+from .sampler_ddp import RandomIdentitySampler_DDP
+from timm.data.random_erasing import RandomErasing
+from torch.utils.data.distributed import DistributedSampler
+
 
 
 __factory = {
     'HOSS': HOSS,
     'Pretrain': Pretrain,
 }
+
+def _seed_worker(worker_id: int) -> None:
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
 def train_collate_fn(batch):
@@ -165,8 +173,29 @@ def make_dataloader_pair(cfg):
 
     if cfg.SOLVER.IMS_PER_BATCH % 2 != 0:
         raise ValueError("cfg.SOLVER.IMS_PER_BATCH should be even number")
-    train_loader_pair = DataLoader(
-        train_set_pair, batch_size=int(cfg.SOLVER.IMS_PER_BATCH / 2), shuffle=True, num_workers=num_workers, 
-        collate_fn=train_pair_collate_fn
-    )
+    g = torch.Generator()
+    g.manual_seed(cfg.SOLVER.SEED)
+    if cfg.MODEL.DIST_TRAIN:
+        sampler = DistributedSampler(train_set_pair, shuffle=True, seed=int(cfg.SOLVER.SEED), drop_last=False)
+        train_loader_pair = DataLoader(
+            train_set_pair,
+            batch_size=int(cfg.SOLVER.IMS_PER_BATCH / 2),
+            sampler=sampler,
+            num_workers=num_workers,
+            collate_fn=train_pair_collate_fn,
+            worker_init_fn=_seed_worker,
+            generator=g,
+            pin_memory=True,
+        )
+    else:
+        train_loader_pair = DataLoader(
+            train_set_pair,
+            batch_size=int(cfg.SOLVER.IMS_PER_BATCH / 2),
+            shuffle=True,
+            num_workers=num_workers,
+            collate_fn=train_pair_collate_fn,
+            worker_init_fn=_seed_worker,
+            generator=g,
+            pin_memory=True,
+        )
     return train_loader_pair, num_classes, cam_num
