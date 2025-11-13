@@ -149,6 +149,7 @@ def do_train_pair(cfg,
                     )
                     if local_rank == 0:
                         wandb.log({
+                            "epoch": epoch,
                             "train/clip_loss": loss_meter.avg,
                             "train/lr": optimizer.param_groups[0]['lr'],
                             "train/epoch": epoch,
@@ -190,6 +191,12 @@ def do_train_pair(cfg,
                     }
                     torch.save(checkpoint, os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_checkpoint_{}.pth".format(epoch)))
                     torch.save(checkpoint, os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_checkpoint_latest.pth"))
+            
+            if local_rank == 0:
+                wandb.log({
+                    "epoch": epoch,
+                    "train/clip_loss_epoch": loss_meter.avg,
+                })
         
             if epoch % eval_period == 0:
                 if val_loader_hoss is not None:

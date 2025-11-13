@@ -2,6 +2,7 @@ import torch
 import wandb
 import logging
 import numpy as np
+from loss.contrastive_loss import clip_loss
 from utils.metrics import R1_mAP_eval, euclidean_distance
 
 
@@ -86,12 +87,58 @@ class ValidationMetricsTracker:
                 feat = model(img, cam_label=camids, img_wh=img_wh)
                 evaluator.update((feat, vid, camid))
 
-        cmc, mAP, distmat, pids, camids, _, _ = evaluator.compute()
+        cmc, mAP, distmat, pids, camids, qf, gf = evaluator.compute()
         self.log_metrics(epoch, mAP, cmc)
 
         if self.cfg.SOLVER.TRACK_VALIDATION_METRICS:
             self.log_distance_stats(distmat, pids, camids, evaluator.num_query, collection_name='hoss')
-            
+        
+        if hasattr(model, "module"):
+            logit_scale = model.module.logit_scale.exp().item()
+        else:
+            logit_scale = model.logit_scale.exp().item()
+
+        q_pids = np.asarray(pids[:evaluator.num_query])
+        g_pids = np.asarray(pids[evaluator.num_query:])
+        q_camids = np.asarray(camids[:evaluator.num_query])
+        g_camids = np.asarray(camids[evaluator.num_query:])
+
+        rgb, sar = 0, 1
+        pid_to_rgb = {}
+        pid_to_sar = {}
+
+        for i, (pid_v, cid_v) in enumerate(zip(q_pids, q_camids)):
+            if cid_v == rgb and pid_v not in pid_to_rgb:
+                pid_to_rgb[pid_v] = ("q", i)
+            if cid_v == sar and pid_v not in pid_to_sar:
+                pid_to_sar[pid_v] = ("q", i)
+        for j, (pid_v, cid_v) in enumerate(zip(g_pids, g_camids)):
+            if cid_v == rgb and pid_v not in pid_to_rgb:
+                pid_to_rgb[pid_v] = ("g", j)
+            if cid_v == sar and pid_v not in pid_to_sar:
+                pid_to_sar[pid_v] = ("g", j)
+
+        common = [pid for pid in pid_to_rgb if pid in pid_to_sar]
+        rgb_feats = []
+        sar_feats = []
+        for pid_v in common:
+            src_r, idx_r = pid_to_rgb[pid_v]
+            src_s, idx_s = pid_to_sar[pid_v]
+            rgb_feat = qf[idx_r] if src_r == "q" else gf[idx_r]
+            sar_feat = qf[idx_s] if src_s == "q" else gf[idx_s]
+            rgb_feats.append(rgb_feat)
+            sar_feats.append(sar_feat)
+        rgb_mat = torch.stack(rgb_feats, dim=0)
+        sar_mat = torch.stack(sar_feats, dim=0)
+        sim_union = torch.matmul(sar_mat, rgb_mat.t()) * float(logit_scale)
+        loss_sar_rgb = clip_loss(sim_union)
+        wandb.log({
+            "val/epoch": epoch,
+            "epoch": epoch,
+            "hoss/clip_loss": float(loss_sar_rgb.item()),
+            "hoss/clip_pairs": len(common),
+        })
+
         return mAP
 
     def run_pair(self, model, epoch, val_loader=None, collection_name='pretrain'):
@@ -144,6 +191,18 @@ class ValidationMetricsTracker:
         q_count = len(q_pids)
 
         self.log_distance_stats(distmat, pids, camids, q_count, collection_name=collection_name)
+        
+        if hasattr(model, "module"):
+            logit_scale = model.module.logit_scale.exp().item()
+        else:
+            logit_scale = model.logit_scale.exp().item()
+        sim = torch.matmul(q_feats, g_feats.t()) * float(logit_scale)
+        clip_loss_val = clip_loss(sim)
+        wandb.log({
+            "epoch": epoch,
+            "val/epoch": epoch,
+            f"{collection_name}/clip_loss": clip_loss_val.item(),
+        })
 
     def log_metrics(self, epoch, mAP, cmc):
         self.logger.info(f"Validation Results - Epoch: {epoch}")
@@ -152,6 +211,7 @@ class ValidationMetricsTracker:
             self.logger.info(f"CMC curve, Rank-{r:<3}:{cmc[r - 1]:.1%}")
 
         wandb.log({
+            "epoch": epoch,
             "val/epoch": epoch,
             "val/mAP": mAP,
             "val/rank1": cmc[0],
