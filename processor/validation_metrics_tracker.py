@@ -92,6 +92,8 @@ class ValidationMetricsTracker:
 
         if self.cfg.SOLVER.TRACK_VALIDATION_METRICS:
             self.log_distance_stats(distmat, pids, camids, evaluator.num_query, collection_name='hoss')
+            self.log_posneg_margins(distmat, pids, camids, evaluator.num_query, collection_name='hoss', epoch=epoch)
+            self.log_posneg_margins_by_modalities(distmat, pids, camids, evaluator.num_query, collection_name='hoss', epoch=epoch)
         
         if hasattr(model, "module"):
             logit_scale = model.module.logit_scale.exp().item()
@@ -191,6 +193,7 @@ class ValidationMetricsTracker:
         q_count = len(q_pids)
 
         self.log_distance_stats(distmat, pids, camids, q_count, collection_name=collection_name)
+        self.log_posneg_margins(distmat, pids, camids, q_count, collection_name=collection_name, epoch=epoch)
         
         if hasattr(model, "module"):
             logit_scale = model.module.logit_scale.exp().item()
@@ -229,3 +232,72 @@ class ValidationMetricsTracker:
         wandb.log({
             f"{collection_name}/{k}": v for k, v in stats.items()
         })
+
+    def log_posneg_margins(self, distmat, pids, camids, q_count, collection_name='val', epoch=0):
+        q_pids = np.asarray(pids[:q_count])
+        g_pids = np.asarray(pids[q_count:])
+        q_camids = np.asarray(camids[:q_count])
+        g_camids = np.asarray(camids[q_count:])
+        margins = []
+        rows = []
+        for i in range(q_count):
+            pos_mask = (g_pids == q_pids[i])
+            if not np.any(pos_mask):
+                continue
+            pos_mean = float(np.mean(distmat[i, pos_mask]))
+            neg_mask = ~pos_mask
+            if not np.any(neg_mask):
+                continue
+            neg_min = float(np.min(distmat[i, :][neg_mask]))
+            margin = float(neg_min - pos_mean)
+            rows.append([int(q_pids[i]), int(q_camids[i]), pos_mask.sum(), pos_mean, neg_min, margin])
+            margins.append(margin)
+        if len(margins) > 0:
+            data = [[r[0], r[1], r[2], r[3], r[4], r[5]] for r in rows]
+            table = wandb.Table(data=data, columns=["pid", "q_camid", "pos_count", "pos_mean", "neg_min", "margin"])
+            wandb.log({
+                f"{collection_name}/margin_mean": float(np.mean(margins)),
+                f"{collection_name}/margin_min": float(np.min(margins)),
+                f"{collection_name}/margin_max": float(np.max(margins)),
+                f"{collection_name}/margin_std": float(np.std(margins)),
+                f"{collection_name}/margin_hist": wandb.HogwildHistogram(margins) if hasattr(wandb, "HogwildHistogram") else wandb.Histogram(np.array(margins)),
+                f"{collection_name}/margins": table,
+                "val/epoch": epoch,
+            })
+
+    def _compute_margins_filtered(self, distmat, q_pids, g_pids, q_camids, g_camids, q_mode=None, g_mode=None):
+        q_indices = np.arange(len(q_pids)) if q_mode is None else np.where(q_camids == q_mode)[0]
+        margins = []
+        for i in q_indices:
+            g_mask = np.ones_like(g_pids, dtype=bool) if g_mode is None else (g_camids == g_mode)
+            pos_mask = (g_pids == q_pids[i]) & g_mask
+            if not np.any(pos_mask):
+                continue
+            pos_mean = float(np.mean(distmat[i, pos_mask]))
+            neg_mask = (g_pids != q_pids[i]) & g_mask
+            if not np.any(neg_mask):
+                continue
+            neg_min = float(np.min(distmat[i, :][neg_mask]))
+            margins.append(float(neg_min - pos_mean))
+        return margins
+
+    def log_posneg_margins_by_modalities(self, distmat, pids, camids, q_count, collection_name='val', epoch=0):
+        q_pids = np.asarray(pids[:q_count])
+        g_pids = np.asarray(pids[q_count:])
+        q_camids = np.asarray(camids[:q_count])
+        g_camids = np.asarray(camids[q_count:])
+        labels = {0: "rgb", 1: "sar"}
+        for q_mode in (0, 1):
+            for g_mode in (0, 1):
+                margins = self._compute_margins_filtered(distmat, q_pids, g_pids, q_camids, g_camids, q_mode=q_mode, g_mode=g_mode)
+                tag = f"{labels[q_mode]}_{labels[g_mode]}"
+                if len(margins) == 0:
+                    continue
+                wandb.log({
+                    f"{collection_name}/margin_mean_{tag}": float(np.mean(margins)),
+                    f"{collection_name}/margin_min_{tag}": float(np.min(margins)),
+                    f"{collection_name}/margin_max_{tag}": float(np.max(margins)),
+                    f"{collection_name}/margin_std_{tag}": float(np.std(margins)),
+                    f"{collection_name}/margin_hist_{tag}": wandb.Histogram(np.array(margins)),
+                    "val/epoch": epoch,
+                })
