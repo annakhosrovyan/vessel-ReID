@@ -3,6 +3,7 @@ Hacked together by / Copyright 2020 Ross Wightman
 """
 from .cosine_lr import CosineLRScheduler
 from .lr_scheduler import WarmupMultiStepLR
+from .wsd_lr import WSDLRScheduler
 
 
 def create_scheduler(cfg, optimizer):
@@ -19,6 +20,23 @@ def create_scheduler(cfg, optimizer):
             warmup_factor=cfg.SOLVER.WARMUP_FACTOR,
             warmup_iters=warmup_t,
             warmup_method=cfg.SOLVER.WARMUP_METHOD
+        )
+    elif scheduler_type == 'wsd':
+        lr_min = 0.002 * cfg.SOLVER.BASE_LR
+        warmup_lr_init = 0.01 * cfg.SOLVER.BASE_LR
+        noise_range = None
+        lr_scheduler = WSDLRScheduler(
+            optimizer,
+            t_initial=num_epochs,
+            lr_min=lr_min,
+            warmup_lr_init=warmup_lr_init,
+            warmup_t=warmup_t,
+            t_in_epochs=True,
+            final_decay_pct=0.1,
+            noise_range_t=noise_range,
+            noise_pct=0.67,
+            noise_std=1.0,
+            noise_seed=42,
         )
     else:
         lr_min = 0.002 * cfg.SOLVER.BASE_LR

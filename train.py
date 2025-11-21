@@ -11,6 +11,7 @@ import numpy as np
 import os
 import argparse
 from config import cfg
+from utils.checkpoint_utils import resume_from_checkpoint
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -73,6 +74,8 @@ if __name__ == '__main__':
 
     scheduler = create_scheduler(cfg, optimizer)
 
+    start_epoch, scaler_state_dict = resume_from_checkpoint(cfg, cfg.SOLVER.RESUME_FROM, model, optimizer, scheduler, args.local_rank, optimizer_center)
+
     do_train(
         cfg,
         model,
@@ -83,5 +86,7 @@ if __name__ == '__main__':
         optimizer_center,
         scheduler,
         loss_func,
-        num_query_val, args.local_rank
+        num_query_val, args.local_rank,
+        start_epoch=start_epoch,
+        scaler_state_dict=scaler_state_dict
     )

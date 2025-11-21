@@ -58,6 +58,8 @@ def do_train_pair(cfg,
             scheduler, 
             loss_func,
             local_rank,
+            start_epoch=0,
+            scaler_state_dict=None,
             ):
     log_period = cfg.SOLVER.LOG_PERIOD
     checkpoint_period = cfg.SOLVER.CHECKPOINT_PERIOD
@@ -90,6 +92,8 @@ def do_train_pair(cfg,
 
     loss_meter = AverageMeter()
     scaler = GradScaler('cuda')
+    if scaler_state_dict is not None:
+        scaler.load_state_dict(scaler_state_dict)
 
     # train pair
     if cfg.MODEL.PAIR:
@@ -97,7 +101,7 @@ def do_train_pair(cfg,
             model.module.train_with_pair()
         else:
             model.train_with_pair()
-        for epoch in range(1, epochs + 1):
+        for epoch in range(start_epoch + 1, epochs + 1):
             start_time = time.time()
             loss_meter.reset()
             scheduler.step(epoch)
@@ -177,6 +181,7 @@ def do_train_pair(cfg,
                             'model_state_dict': model.state_dict(),
                             'optimizer_state_dict': optimizer.state_dict(),
                             'scheduler_state_dict': scheduler.state_dict(),
+                            'scaler_state_dict': scaler.state_dict(),
                             'loss': loss_meter.avg,
                         }
                         torch.save(checkpoint, os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_checkpoint_{}.pth".format(epoch)))
@@ -187,6 +192,7 @@ def do_train_pair(cfg,
                         'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         'scheduler_state_dict': scheduler.state_dict(),
+                        'scaler_state_dict': scaler.state_dict(),
                         'loss': loss_meter.avg,
                     }
                     torch.save(checkpoint, os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_checkpoint_{}.pth".format(epoch)))
@@ -215,7 +221,9 @@ def do_train(cfg,
              optimizer_center,
              scheduler,
              loss_fn,
-             num_query, local_rank):
+             num_query, local_rank,
+             start_epoch=0,
+             scaler_state_dict=None):
     log_period = cfg.SOLVER.LOG_PERIOD
     checkpoint_period = cfg.SOLVER.CHECKPOINT_PERIOD
     eval_period = cfg.SOLVER.EVAL_PERIOD
@@ -241,6 +249,8 @@ def do_train(cfg,
 
     evaluator = R1_mAP_eval(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM)
     scaler = GradScaler()
+    if scaler_state_dict is not None:
+        scaler.load_state_dict(scaler_state_dict)
 
     best_mAP = 0.0
     if wandb.run is None:   # prevent wandb from initializing multiple times during pretraining
@@ -256,7 +266,7 @@ def do_train(cfg,
         model.module.train_with_single()
     else:
         model.train_with_single()
-    for epoch in range(1, epochs + 1):
+    for epoch in range(start_epoch + 1, epochs + 1):
         start_time = time.time()
         loss_meter.reset()
         acc_meter.reset()
@@ -310,11 +320,29 @@ def do_train(cfg,
         if epoch % checkpoint_period == 0:
             if cfg.MODEL.DIST_TRAIN:
                 if dist.get_rank() == 0:
-                    torch.save(model.state_dict(),
-                               os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
+                    checkpoint = {
+                        'epoch': epoch,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'optimizer_center_state_dict': optimizer_center.state_dict(),
+                        'scheduler_state_dict': scheduler.state_dict(),
+                        'scaler_state_dict': scaler.state_dict(),
+                        'loss': loss_meter.avg,
+                    }
+                    torch.save(checkpoint, os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_checkpoint_{}.pth".format(epoch)))
+                    torch.save(checkpoint, os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_checkpoint_latest.pth"))
             else:
-                torch.save(model.state_dict(),
-                           os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + '_{}.pth'.format(epoch)))
+                checkpoint = {
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'optimizer_center_state_dict': optimizer_center.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
+                    'scaler_state_dict': scaler.state_dict(),
+                    'loss': loss_meter.avg,
+                }
+                torch.save(checkpoint, os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_checkpoint_{}.pth".format(epoch)))
+                torch.save(checkpoint, os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_checkpoint_latest.pth"))
 
         if epoch % eval_period == 0:
             if cfg.MODEL.DIST_TRAIN:
@@ -330,9 +358,11 @@ def do_train(cfg,
                             evaluator.update((feat, vid, camid))
                     cmc, mAP, distmat, pids, camids, _, _ = evaluator.compute()
 
-                    if val_loader is not None:
+                    if cfg.SOLVER.TRACK_VALIDATION_METRICS:
                         validation_metrics_tracker.log_distance_stats(distmat, pids, camids, evaluator.num_query, collection_name='val')
-                    
+                        validation_metrics_tracker.log_posneg_margins(distmat, pids, camids, evaluator.num_query, collection_name='val', epoch=epoch)
+                        validation_metrics_tracker.log_posneg_margins_by_modalities(distmat, pids, camids, evaluator.num_query, collection_name='val', epoch=epoch)
+
                     if val_loader_optisar_pair is not None:
                         validation_metrics_tracker.run_pair(model, epoch, val_loader_optisar_pair, collection_name='optisar')
 
@@ -361,6 +391,9 @@ def do_train(cfg,
 
                 if cfg.SOLVER.TRACK_VALIDATION_METRICS:
                     validation_metrics_tracker.log_distance_stats(distmat, pids, camids, evaluator.num_query, collection_name='hoss')
+                    validation_metrics_tracker.log_posneg_margins(distmat, pids, camids, evaluator.num_query, collection_name='hoss', epoch=epoch)
+                    validation_metrics_tracker.log_posneg_margins_by_modalities(distmat, pids, camids, evaluator.num_query, collection_name='hoss', epoch=epoch)
+                    
                     if val_loader_optisar_pair is not None:
                         validation_metrics_tracker.run_pair(model, epoch, val_loader_optisar_pair, collection_name='optisar')
 

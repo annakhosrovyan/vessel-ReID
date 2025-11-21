@@ -152,7 +152,7 @@ _C.SOLVER.WARMUP_METHOD = "linear"
 _C.SOLVER.COSINE_MARGIN = 0.5
 _C.SOLVER.COSINE_SCALE = 30
 
-# LR scheduler type: 'cosine' or 'step'
+# LR scheduler type: 'cosine', 'step', or 'wsd'
 _C.SOLVER.SCHEDULER_TYPE = 'cosine'
 
 # epoch number of saving checkpoints
@@ -168,6 +168,7 @@ _C.SOLVER.IMS_PER_BATCH = 64
 _C.SOLVER.TRACK_VALIDATION_METRICS = True
 _C.SOLVER.TRACK_VALIDATION_METRICS_OPTISAR = True
 _C.SOLVER.PRETRAIN_TRACK_VALIDATION_DIR = ''
+_C.SOLVER.RESUME_FROM = ""
 
 # ---------------------------------------------------------------------------- #
 # TEST

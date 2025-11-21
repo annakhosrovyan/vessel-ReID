@@ -12,6 +12,7 @@ from processor import do_train_pair
 from utils.logger import setup_logger
 from datasets import make_dataloader_pair
 from solver.scheduler_factory import create_scheduler
+from utils.checkpoint_utils import resume_from_checkpoint
 
 
 def set_seed(seed):
@@ -72,6 +73,8 @@ if __name__ == "__main__":
 
     scheduler = create_scheduler(cfg, optimizer)
 
+    start_epoch, scaler_state_dict = resume_from_checkpoint(cfg, cfg.SOLVER.RESUME_FROM, model, optimizer, scheduler, args.local_rank)
+
     do_train_pair(
         cfg, 
         model, 
@@ -80,4 +83,6 @@ if __name__ == "__main__":
         scheduler, 
         loss_func,
         args.local_rank,
+        start_epoch=start_epoch,
+        scaler_state_dict=scaler_state_dict
         )
