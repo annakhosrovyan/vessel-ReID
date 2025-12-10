@@ -103,6 +103,31 @@ def eval_func(distmat, q_pids, g_pids, q_camids, g_camids, max_rank=50, cross_id
     return all_cmc, mAP
 
 
+def minp_func(distmat, q_pids, g_pids, q_camids, g_camids, cross_id_modality=False):
+    num_q, num_g = distmat.shape
+    indices = np.argsort(distmat, axis=1)
+    matches = (g_pids[indices] == q_pids[:, np.newaxis]).astype(np.int32)
+    inps = []
+    for q_idx in range(num_q):
+        q_pid = q_pids[q_idx]
+        q_camid = q_camids[q_idx]
+        order = indices[q_idx]
+        if cross_id_modality:
+            remove = (g_pids[order] == q_pid) & (g_camids[order] == q_camid)
+            keep = np.invert(remove)
+        else:
+            keep = np.ones_like(g_pids, dtype=bool)
+        orig = matches[q_idx][keep]
+        if not np.any(orig):
+            continue
+        last_pos = int(np.where(orig == 1)[0][-1]) + 1
+        num_rel = int(orig.sum())
+        inp = float(num_rel) / float(last_pos)
+        inps.append(inp)
+    assert len(inps) > 0, "Error: all query identities do not appear in gallery"
+    return float(np.mean(inps))
+
+
 class R1_mAP_eval():
     def __init__(self, num_query, max_rank=50, feat_norm=True, reranking=False, cross_id_modality=False):
         super(R1_mAP_eval, self).__init__()
@@ -150,7 +175,10 @@ class R1_mAP_eval():
                              g_camids, max_rank=self.max_rank, 
                              cross_id_modality=self.cross_id_modality)
 
-        return cmc, mAP, distmat, self.pids, self.camids, qf, gf
+        mINP = minp_func(distmat, q_pids, g_pids, q_camids, g_camids, 
+                         cross_id_modality=self.cross_id_modality)
+        
+        return cmc, mAP, mINP, distmat, self.pids, self.camids, qf, gf
 
 
 

@@ -87,8 +87,8 @@ class ValidationMetricsTracker:
                 feat = model(img, cam_label=camids, img_wh=img_wh)
                 evaluator.update((feat, vid, camid))
 
-        cmc, mAP, distmat, pids, camids, qf, gf = evaluator.compute()
-        self.log_metrics(epoch, mAP, cmc)
+        cmc, mAP, mINP, distmat, pids, camids, qf, gf = evaluator.compute()
+        self.log_metrics(epoch, mAP, mINP, cmc)
 
         if self.cfg.SOLVER.TRACK_VALIDATION_METRICS:
             self.log_distance_stats(distmat, pids, camids, evaluator.num_query, collection_name='hoss')
@@ -141,7 +141,7 @@ class ValidationMetricsTracker:
             "hoss/clip_pairs": len(common),
         })
 
-        return mAP
+        return mAP, mINP
 
     def run_pair(self, model, epoch, val_loader=None, collection_name='pretrain'):
         if val_loader is None or self.local_rank != 0:
@@ -207,9 +207,10 @@ class ValidationMetricsTracker:
             f"{collection_name}/clip_loss": clip_loss_val.item(),
         })
 
-    def log_metrics(self, epoch, mAP, cmc):
+    def log_metrics(self, epoch, mAP, mINP, cmc):
         self.logger.info(f"Validation Results - Epoch: {epoch}")
         self.logger.info(f"mAP: {mAP:.1%}")
+        self.logger.info(f"mINP: {mINP:.1%}")
         for r in [1, 5, 10]:
             self.logger.info(f"CMC curve, Rank-{r:<3}:{cmc[r - 1]:.1%}")
 
@@ -217,6 +218,7 @@ class ValidationMetricsTracker:
             "epoch": epoch,
             "val/epoch": epoch,
             "val/mAP": mAP,
+            "val/mINP": mINP,
             "val/rank1": cmc[0],
             "val/rank5": cmc[4],
             "val/rank10": cmc[9],

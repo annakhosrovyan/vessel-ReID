@@ -356,7 +356,7 @@ def do_train(cfg,
                             img_wh = img_wh.to(device)
                             feat = model(img, cam_label=camids, view_label=target_view, img_wh=img_wh)
                             evaluator.update((feat, vid, camid))
-                    cmc, mAP, distmat, pids, camids, _, _ = evaluator.compute()
+                    cmc, mAP, mINP, distmat, pids, camids, _, _ = evaluator.compute()
 
                     if cfg.SOLVER.TRACK_VALIDATION_METRICS:
                         validation_metrics_tracker.log_distance_stats(distmat, pids, camids, evaluator.num_query, collection_name='val')
@@ -368,6 +368,7 @@ def do_train(cfg,
 
                     logger.info("Validation Results - Epoch: {}".format(epoch))
                     logger.info("mAP: {:.1%}".format(mAP))
+                    logger.info("mINP: {:.1%}".format(mINP))
                     for r in [1, 5, 10]:
                         logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
                     
@@ -387,7 +388,7 @@ def do_train(cfg,
                         img_wh = img_wh.to(device)
                         feat = model(img, cam_label=camids, img_wh=img_wh)
                         evaluator.update((feat, vid, camid))
-                cmc, mAP, distmat, pids, camids, _, _ = evaluator.compute()
+                cmc, mAP, mINP, distmat, pids, camids, _, _ = evaluator.compute()
 
                 if cfg.SOLVER.TRACK_VALIDATION_METRICS:
                     validation_metrics_tracker.log_distance_stats(distmat, pids, camids, evaluator.num_query, collection_name='hoss')
@@ -399,6 +400,7 @@ def do_train(cfg,
 
                 logger.info("Validation Results - Epoch: {}".format(epoch))
                 logger.info("mAP: {:.1%}".format(mAP))
+                logger.info("mINP: {:.1%}".format(mINP))
                 for r in [1, 5, 10]:
                     logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
                 
@@ -414,6 +416,7 @@ def do_train(cfg,
                 wandb.log({
                     "epoch": epoch,
                     "val_mAP": mAP,
+                    "val_mINP": mINP,
                     "val_rank1": cmc[0],
                     "val_rank5": cmc[4],
                     "val_rank10": cmc[9]
@@ -463,9 +466,10 @@ def do_inference(cfg,
             evaluator.update((feat, pid, camid))
             img_path_list.extend(imgpath)
 
-    cmc, mAP, _, _, _, _, _ = evaluator.compute()
+    cmc, mAP, mINP, _, _, _, _, _ = evaluator.compute()
     logger.info("Test Results ")
     logger.info("mAP: {:.1%}".format(mAP))
+    logger.info("mINP: {:.1%}".format(mINP))
     for r in [1, 5, 10]:
         logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
     return cmc[0], cmc[4]
