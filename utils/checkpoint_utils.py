@@ -35,6 +35,8 @@ def resume_from_checkpoint(cfg,
             move_optimizer_state_to_device(optimizer_center, device)
         if "scheduler_state_dict" in ckpt:
             scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+            if hasattr(scheduler, "t_initial"):
+                scheduler.t_initial = int(cfg.SOLVER.MAX_EPOCHS)
         if "epoch" in ckpt:
             start_epoch = int(ckpt["epoch"])
         if "scaler_state_dict" in ckpt:

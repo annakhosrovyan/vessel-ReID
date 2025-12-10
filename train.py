@@ -64,7 +64,7 @@ if __name__ == '__main__':
         torch.distributed.init_process_group(backend='nccl', init_method='env://')
 
     os.environ['CUDA_VISIBLE_DEVICES'] = cfg.MODEL.DEVICE_ID
-    train_loader, val_loader, num_query_val, _, _, _, num_classes, camera_num = make_dataloader(cfg)
+    train_loader, val_loader, num_query_val, _, _, num_classes, camera_num = make_dataloader(cfg)
 
     model = make_model(cfg, num_class=num_classes, camera_num=camera_num)
 

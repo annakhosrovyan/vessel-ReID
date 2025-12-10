@@ -98,8 +98,6 @@ def make_dataloader(cfg):
     dataset = __factory[cfg.DATASETS.NAMES](root=cfg.DATASETS.ROOT_DIR, eval_mode=cfg.DATASETS.EVAL_MODE)
 
     train_set = ImageDataset(dataset.train, train_transforms)
-    val_set = ImageDataset(dataset.query_val + dataset.gallery_val, val_transforms)
-    train_set_pair = ImageDataset(dataset.train_pair, train_transforms, pair=True)
     num_classes = dataset.num_train_pids
     cam_num = dataset.num_train_cams
 
@@ -129,8 +127,9 @@ def make_dataloader(cfg):
             collate_fn=train_collate_fn
         )
     else:
-        print('unsupported sampler! expected softmax or triplet but got {}'.format(cfg.SAMPLER))
+        print('unsupported sampler! expected softmax or triplet but got {}'.format(cfg.DATALOADER.SAMPLER))
 
+    val_set = ImageDataset(dataset.query_val + dataset.gallery_val, val_transforms)
     test_set = ImageDataset(dataset.query + dataset.gallery, val_transforms)
 
     val_loader = DataLoader(
@@ -143,11 +142,8 @@ def make_dataloader(cfg):
     )
     if cfg.SOLVER.IMS_PER_BATCH % 2 != 0:
         raise ValueError('cfg.SOLVER.IMS_PER_BATCH should be even number')
-    train_loader_pair = DataLoader(
-        train_set_pair, batch_size=int(cfg.SOLVER.IMS_PER_BATCH / 2), shuffle=True, num_workers=num_workers,
-        collate_fn=train_pair_collate_fn
-    )
-    return train_loader, val_loader, len(dataset.query_val), train_loader_pair, test_loader, len(dataset.query), num_classes, cam_num
+
+    return train_loader, val_loader, len(dataset.query_val), test_loader, len(dataset.query), num_classes, cam_num
 
 
 def make_dataloader_pair(cfg):
@@ -174,12 +170,17 @@ def make_dataloader_pair(cfg):
     if cfg.SOLVER.IMS_PER_BATCH % 2 != 0:
         raise ValueError("cfg.SOLVER.IMS_PER_BATCH should be even number")
     g = torch.Generator()
-    g.manual_seed(cfg.SOLVER.SEED)
+    seed = int(cfg.SOLVER.SEED)
+    if cfg.MODEL.DIST_TRAIN and dist.is_available() and dist.is_initialized():
+        seed += dist.get_rank()
+    g.manual_seed(seed)
     if cfg.MODEL.DIST_TRAIN:
-        sampler = DistributedSampler(train_set_pair, shuffle=True, seed=int(cfg.SOLVER.SEED), drop_last=False)
+        print("DIST_TRAIN START")
+        mini_batch_size = cfg.SOLVER.IMS_PER_BATCH // dist.get_world_size()
+        sampler = torch.utils.data.distributed.DistributedSampler(train_set_pair)
         train_loader_pair = DataLoader(
             train_set_pair,
-            batch_size=int(cfg.SOLVER.IMS_PER_BATCH / 2),
+            batch_size=int(mini_batch_size / 2),
             sampler=sampler,
             num_workers=num_workers,
             collate_fn=train_pair_collate_fn,

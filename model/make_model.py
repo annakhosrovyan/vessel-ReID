@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from .backbones.resnet import ResNet, Bottleneck
 from .backbones.vit_transoss import vit_base_patch16_224_TransOSS
-from .backbones.dinov3 import DinoV3
+from .backbones.dinov3 import DinoV3, DinoV3DualEmbed
 from .backbones.chi_vit import chivit_base
 from loss.metric_learning import Arcface, Cosface, AMSoftmax, CircleLoss
 
@@ -109,11 +109,30 @@ class Backbone(nn.Module):
 
 
     def load_param(self, trained_path):
-        param_dict = torch.load(trained_path)
-        if 'state_dict' in param_dict:
-            param_dict = param_dict['state_dict']
-        for i in param_dict:
-            self.state_dict()[i].copy_(param_dict[i])
+        param_obj = torch.load(trained_path, map_location='cpu')
+        if isinstance(param_obj, dict):
+            extracted = None
+            for k in ('state_dict', 'model_state_dict', 'model', 'model_state', 'net', 'weights', 'params'):
+                v = param_obj.get(k) if isinstance(param_obj, dict) else None
+                if isinstance(v, dict):
+                    extracted = v
+                    break
+            if extracted is None:
+                extracted = {k: v for k, v in param_obj.items() if torch.is_tensor(v)}
+            param_dict = extracted
+        else:
+            param_dict = param_obj
+        model_state = self.state_dict()
+        matched = 0
+        for k, v in param_dict.items():
+            key = k.replace('module.', '')
+            if key in model_state and isinstance(v, torch.Tensor) and model_state[key].shape == v.shape:
+                model_state[key].copy_(v)
+                matched += 1
+        total = len(model_state)
+        print(f'Loaded {matched}/{total} tensors from checkpoint')
+        if matched == 0:
+            raise ValueError(f'No parameters matched when loading {trained_path}. Check checkpoint format and key names.')
         print('Loading pretrained model from {}'.format(trained_path))
 
 
@@ -206,9 +225,11 @@ class build_transformer(nn.Module):
         self.train_pair = False
 
 
-    def forward(self, x, label=None, cam_label= None, img_wh=None):
+    def forward(self, x, label=None, cam_label=None, img_wh=None):
         if self.model_type == 'dinov3':
             global_feat = self.base(x)
+        elif self.model_type == 'dinov3_dual_embed':
+            global_feat = self.base(x, cam_label=cam_label)
         elif self.model_type == 'chivit_base':
             B = x.shape[0]
             rgb_idx = torch.nonzero(cam_label == 0, as_tuple=True)[0]
@@ -260,9 +281,30 @@ class build_transformer(nn.Module):
 
 
     def load_param(self, trained_path):
-        param_dict = torch.load(trained_path)
-        for i in param_dict:
-            self.state_dict()[i.replace('module.', '')].copy_(param_dict[i])
+        param_obj = torch.load(trained_path, map_location='cpu')
+        if isinstance(param_obj, dict):
+            extracted = None
+            for k in ('state_dict', 'model_state_dict', 'model', 'model_state', 'net', 'weights', 'params'):
+                v = param_obj.get(k) if isinstance(param_obj, dict) else None
+                if isinstance(v, dict):
+                    extracted = v
+                    break
+            if extracted is None:
+                extracted = {k: v for k, v in param_obj.items() if torch.is_tensor(v)}
+            param_dict = extracted
+        else:
+            param_dict = param_obj
+        model_state = self.state_dict()
+        matched = 0
+        for k, v in param_dict.items():
+            key = k.replace('module.', '')
+            if key in model_state and isinstance(v, torch.Tensor) and model_state[key].shape == v.shape:
+                model_state[key].copy_(v)
+                matched += 1
+        total = len(model_state)
+        print(f'Loaded {matched}/{total} tensors from checkpoint')
+        if matched == 0:
+            raise ValueError(f'No parameters matched when loading {trained_path}. Check checkpoint format and key names.')
         print('Loading pretrained model from {}'.format(trained_path))
 
 
@@ -276,6 +318,7 @@ class build_transformer(nn.Module):
 __factory_T_type = {
     'vit_base_patch16_224_TransOSS': vit_base_patch16_224_TransOSS,
     'dinov3': DinoV3,
+    'dinov3_dual_embed': DinoV3DualEmbed,
     'chivit_base': chivit_base,
 }
 
