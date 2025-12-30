@@ -75,7 +75,10 @@ class DinoV3DualEmbed(DinoV3):
         
         with torch.no_grad():
             self.patch_embed_rgb.weight.copy_(self.proj.weight)
-            self.patch_embed_sar.weight.copy_(self.proj.weight)
+
+            w_mean = self.proj.weight.mean(dim=1, keepdim=True)
+            self.patch_embed_sar.weight.copy_(w_mean.repeat(1, in_ch, 1, 1) / in_ch)
+
             if self.patch_embed_rgb.bias is not None:
                 self.patch_embed_rgb.bias.copy_(self.proj.bias)
             if self.patch_embed_sar.bias is not None:
