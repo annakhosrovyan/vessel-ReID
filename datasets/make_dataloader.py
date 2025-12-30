@@ -82,22 +82,25 @@ def make_dataloader(cfg):
             T.Pad(cfg.INPUT.PADDING),
             T.RandomCrop(cfg.INPUT.SIZE_TRAIN),
             T.ToTensor(),
-            T.Normalize(mean=cfg.INPUT.PIXEL_MEAN, std=cfg.INPUT.PIXEL_STD),
-            RandomErasing(probability=cfg.INPUT.RE_PROB, mode='pixel', max_count=1, device='cpu'),
+            # RandomErasing(probability=cfg.INPUT.RE_PROB, mode='pixel', max_count=1, device='cpu'),
             # RandomErasing(probability=cfg.INPUT.RE_PROB, mean=cfg.INPUT.PIXEL_MEAN)
         ])
 
     val_transforms = T.Compose([
         T.Resize(cfg.INPUT.SIZE_TEST),
         T.ToTensor(),
-        T.Normalize(mean=cfg.INPUT.PIXEL_MEAN, std=cfg.INPUT.PIXEL_STD)
     ])
 
     num_workers = cfg.DATALOADER.NUM_WORKERS
 
     dataset = __factory[cfg.DATASETS.NAMES](root=cfg.DATASETS.ROOT_DIR, eval_mode=cfg.DATASETS.EVAL_MODE)
 
-    train_set = ImageDataset(dataset.train, train_transforms)
+    normalize_rgb = T.Normalize(mean=cfg.INPUT.PIXEL_MEAN_RGB, 
+                                std=cfg.INPUT.PIXEL_STD_RGB)
+    normalize_sar = T.Normalize(mean=cfg.INPUT.PIXEL_MEAN_SAR, 
+                                std=cfg.INPUT.PIXEL_STD_SAR)
+
+    train_set = ImageDataset(dataset.train, train_transforms, normalize_rgb=normalize_rgb, normalize_sar=normalize_sar)
     num_classes = dataset.num_train_pids
     cam_num = dataset.num_train_cams
 
@@ -129,8 +132,8 @@ def make_dataloader(cfg):
     else:
         print('unsupported sampler! expected softmax or triplet but got {}'.format(cfg.DATALOADER.SAMPLER))
 
-    val_set = ImageDataset(dataset.query_val + dataset.gallery_val, val_transforms)
-    test_set = ImageDataset(dataset.query + dataset.gallery, val_transforms)
+    val_set = ImageDataset(dataset.query_val + dataset.gallery_val, val_transforms, normalize_rgb=normalize_rgb, normalize_sar=normalize_sar)
+    test_set = ImageDataset(dataset.query + dataset.gallery, val_transforms, normalize_rgb=normalize_rgb, normalize_sar=normalize_sar)
 
     val_loader = DataLoader(
         val_set, batch_size=cfg.TEST.IMS_PER_BATCH, shuffle=False, num_workers=num_workers,
@@ -153,8 +156,7 @@ def make_dataloader_pair(cfg):
             T.Pad(cfg.INPUT.PADDING),
             T.RandomCrop(cfg.INPUT.SIZE_TRAIN),
             T.ToTensor(),
-            T.Normalize(mean=cfg.INPUT.PIXEL_MEAN, std=cfg.INPUT.PIXEL_STD),
-            RandomErasing(probability=cfg.INPUT.RE_PROB, mode="pixel", max_count=1, device="cpu"),
+            # RandomErasing(probability=cfg.INPUT.RE_PROB, mode="pixel", max_count=1, device="cpu"),
             # RandomErasing(probability=cfg.INPUT.RE_PROB, mean=cfg.INPUT.PIXEL_MEAN)
         ]
     )
@@ -163,7 +165,12 @@ def make_dataloader_pair(cfg):
 
     dataset = __factory[cfg.DATASETS.NAMES](root=cfg.DATASETS.ROOT_DIR)
 
-    train_set_pair = ImageDataset(dataset.train_pair, train_transforms, pair=True)
+    normalize_rgb = T.Normalize(mean=cfg.INPUT.PIXEL_MEAN_RGB, 
+                                std=cfg.INPUT.PIXEL_STD_RGB)
+    normalize_sar = T.Normalize(mean=cfg.INPUT.PIXEL_MEAN_SAR, 
+                                std=cfg.INPUT.PIXEL_STD_SAR)
+
+    train_set_pair = ImageDataset(dataset.train_pair, train_transforms, pair=True, normalize_rgb=normalize_rgb, normalize_sar=normalize_sar)
     num_classes = dataset.num_train_pair_pids
     cam_num = dataset.num_train_pair_cams
 

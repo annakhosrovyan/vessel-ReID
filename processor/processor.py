@@ -26,12 +26,17 @@ def _setup_validation_dataloader(cfg):
     val_transforms = T.Compose([
         T.Resize(cfg.INPUT.SIZE_TEST),
         T.ToTensor(),
-        T.Normalize(mean=cfg.INPUT.PIXEL_MEAN, std=cfg.INPUT.PIXEL_STD)
     ])
-        
+
+    normalize_rgb = T.Normalize(mean=cfg.INPUT.PIXEL_MEAN_RGB, 
+                                std=cfg.INPUT.PIXEL_STD_RGB)
+    normalize_sar = T.Normalize(mean=cfg.INPUT.PIXEL_MEAN_SAR, 
+                                std=cfg.INPUT.PIXEL_STD_SAR)
+
+
     if cfg.SOLVER.TRACK_VALIDATION_METRICS:
         val_ds = HOSS()
-        val_set_hoss = ImageDataset(val_ds.query_val + val_ds.gallery_val, val_transforms)
+        val_set_hoss = ImageDataset(val_ds.query_val + val_ds.gallery_val, val_transforms, normalize_rgb=normalize_rgb, normalize_sar=normalize_sar)
         val_loader_hoss = DataLoader(
             val_set_hoss, batch_size=cfg.TEST.IMS_PER_BATCH, shuffle=False, num_workers=cfg.DATALOADER.NUM_WORKERS,
             collate_fn=val_collate_fn
@@ -42,7 +47,7 @@ def _setup_validation_dataloader(cfg):
         if cfg.SOLVER.IMS_PER_BATCH % 2 != 0:
             raise ValueError("cfg.SOLVER.IMS_PER_BATCH should be even number")
         dataset_optisar = OptiSarPairVal(root=cfg.SOLVER.PRETRAIN_TRACK_VALIDATION_DIR)
-        val_set_optisar_pretrain = ImageDataset(dataset_optisar.train_pair, val_transforms, pair=True)
+        val_set_optisar_pretrain = ImageDataset(dataset_optisar.train_pair, val_transforms, pair=True, normalize_rgb=normalize_rgb, normalize_sar=normalize_sar)
         val_loader_optisar_pair = DataLoader(
             val_set_optisar_pretrain, batch_size=int(cfg.SOLVER.IMS_PER_BATCH / 2), shuffle=True, num_workers=cfg.DATALOADER.NUM_WORKERS, 
             collate_fn=val_pair_collate_fn
