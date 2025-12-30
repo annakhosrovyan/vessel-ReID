@@ -84,17 +84,19 @@ class BaseImageDataset(BaseDataset):
         print("  ----------------------------------------")
 
 class ImageDataset(Dataset):
-    def __init__(self, dataset, transform=None, pair=False):
+    def __init__(self, dataset, transform=None, pair=False, normalize_rgb=None, normalize_sar=None):
         self.dataset = dataset
         self.transform = transform
 
         self.pair = pair
+        self.normalize_rgb = normalize_rgb
+        self.normalize_sar = normalize_sar
 
     def __len__(self):
         return len(self.dataset)
 
     def get_image(self, img_path):
-        if img_path.endswith("SAR.tif"):
+        if img_path.endswith("SAR.tif") or img_path.endswith("SAR.png"):
             img = read_image(img_path)
             img = sar32bit2RGB(img)
             img_size = img.size
@@ -103,8 +105,16 @@ class ImageDataset(Dataset):
             img_size = img.size
             img_size = [img_size[0] * 0.75, img_size[1] * 0.75]
         img_size = ((img_size[0] / 93 - 0.434) / 0.031, (img_size[1] / 427 - 0.461) / 0.031, img_size[1] / img_size[0])
+        
         if self.transform is not None:
             img = self.transform(img)
+        
+        if "SAR" in img_path:
+            if self.normalize_sar is not None:
+                img = self.normalize_sar(img)
+        else:
+            if self.normalize_rgb is not None:
+                img = self.normalize_rgb(img)
         return img, img_size
 
     def __getitem__(self, index):

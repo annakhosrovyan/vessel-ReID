@@ -79,10 +79,12 @@ _C.INPUT.SIZE_TEST = [256, 128]
 _C.INPUT.PROB = 0.5
 # Random probability for random erasing
 _C.INPUT.RE_PROB = 0.5
-# Values to be used for image normalization
-_C.INPUT.PIXEL_MEAN = [0.485, 0.456, 0.406]
-# Values to be used for image normalization
-_C.INPUT.PIXEL_STD = [0.229, 0.224, 0.225]
+
+_C.INPUT.PIXEL_MEAN_RGB = [0.485, 0.456, 0.406]
+_C.INPUT.PIXEL_STD_RGB = [0.229, 0.224, 0.225]
+_C.INPUT.PIXEL_MEAN_SAR = [0.340619, 0.340619, 0.340619]
+_C.INPUT.PIXEL_STD_SAR = [0.276758, 0.276758, 0.276758]
+
 # Value of padding size
 _C.INPUT.PADDING = 10
 
