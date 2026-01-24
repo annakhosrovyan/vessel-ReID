@@ -5,49 +5,46 @@ from .bases import BaseImageDataset
 
 
 class HOSS(BaseImageDataset):
-    dataset_dir = 'HOSS'
-    s2o_dir = 'subset/S2O'
-    o2s_dir = 'subset/O2S'
-    
-    def __init__(self, root='/nfs/h100/raid/rs/vessel_detection', verbose=True, pid_begin = 0, eval_mode='all', **kwargs):
+    dataset_dir = 'HOSS_balanced'    
+    def __init__(self, 
+                root='/nfs/h100/raid/rs/vessel_detection', 
+                verbose=True, 
+                pid_begin=0, 
+                eval_mode='all', 
+                **kwargs
+                ):
         super(HOSS, self).__init__()
         self.dataset_dir = osp.join(root, self.dataset_dir)
-        self.s2o_dir = osp.join(self.dataset_dir, self.s2o_dir)
-        self.o2s_dir = osp.join(self.dataset_dir, self.o2s_dir)
 
-        self.train_dir = osp.join(self.dataset_dir, 'bounding_box_train')
-        
-        self.query_dir = osp.join(self.dataset_dir, 'query')
-        self.gallery_dir = osp.join(self.dataset_dir, 'bounding_box_test')
-        
-        self.query_val_dir = osp.join(self.dataset_dir, 'query_val')
-        self.gallery_val_dir = osp.join(self.dataset_dir, 'gallery_val')
+        eval_modes = ['rgb_sar', 'sar_rgb', 'rgb_mixed', 'sar_mixed']
+        if eval_mode == 'all':
+            eval_mode_list = eval_modes
+        else:
+            eval_mode_list = [eval_mode]
 
-        if eval_mode == 's2o':
-            self.query_dir = osp.join(self.s2o_dir, 'query')
-            self.gallery_dir = osp.join(self.s2o_dir, 'bounding_box_test')
-        elif eval_mode == 'o2s':
-            self.query_dir = osp.join(self.o2s_dir, 'query')
-            self.gallery_dir = osp.join(self.o2s_dir, 'bounding_box_test')
+        self.train_dir = osp.join(self.dataset_dir, 'train')
+        
+        self.query_dir = [osp.join(self.dataset_dir, 'test', mode, 'query') 
+                            for mode in eval_mode_list]
+        self.gallery_dir = osp.join(self.dataset_dir, 'test', 'gallery')
+        
+        self.query_val_dir = [osp.join(self.dataset_dir, 'val', mode, 'query') 
+                              for mode in eval_mode_list]
+        self.gallery_val_dir = osp.join(self.dataset_dir, 'val', 'gallery')
 
         self._check_before_run()
         self.pid_begin = pid_begin
         train, train_pair = self._process_dir_train(self.train_dir, relabel=True)
         
-        query = self._process_dir(self.query_dir, relabel=False)
+        query = []
+        for query_dir in self.query_dir:
+            query.extend(self._process_dir(query_dir, relabel=False))
         gallery = self._process_dir(self.gallery_dir, relabel=False)
         
-        query_val = self._process_dir(self.query_val_dir, relabel=False)
+        query_val = []
+        for query_val_dir in self.query_val_dir:
+            query_val.extend(self._process_dir(query_val_dir, relabel=False))
         gallery_val = self._process_dir(self.gallery_val_dir, relabel=False)
-
-        if eval_mode == 's2s':
-            query = self._filter_by_modality(query, modality='SAR')
-            gallery = self._filter_by_modality(gallery, modality='SAR')
-            query, gallery = self._ensure_mutual_ids(query, gallery)
-        elif eval_mode == 'o2o':
-            query = self._filter_by_modality(query, modality='RGB')
-            gallery = self._filter_by_modality(gallery, modality='RGB')
-            query, gallery = self._ensure_mutual_ids(query, gallery)
 
         if verbose:
             print("=> HOSS ReID Dataset loaded")
@@ -73,30 +70,40 @@ class HOSS(BaseImageDataset):
         self.num_query_pids, self.num_query_imgs, self.num_query_cams, self.num_query_vids = self.get_imagedata_info(self.query)
         self.num_gallery_pids, self.num_gallery_imgs, self.num_gallery_cams, self.num_gallery_vids = self.get_imagedata_info(self.gallery)
 
-    def _ensure_mutual_ids(self, query, gallery):
-        query_ids = set()
-        gallery_ids = set()
-        
-        for _, pid, _, _ in query:
-            query_ids.add(pid)
-        for _, pid, _, _ in gallery:
-            gallery_ids.add(pid)
-        
-        mutual_ids = query_ids.intersection(gallery_ids)
-        
-        filtered_query = [(img_path, pid, camid, trackid) for img_path, pid, camid, trackid in query if pid in mutual_ids]
-        filtered_gallery = [(img_path, pid, camid, trackid) for img_path, pid, camid, trackid in gallery if pid in mutual_ids]
-        
-        return filtered_query, filtered_gallery
+    def print_dataset_statistics(self, train, query, gallery, query_val, gallery_val):
+        num_train_pids, num_train_imgs, num_train_cams, _ = self.get_imagedata_info(train) if train is not None else (0, 0, 0, 0)
 
-    def _filter_by_modality(self, dataset, modality):
-        filtered_dataset = []
-        for img_path, pid, camid, trackid in dataset:
-            if modality == 'SAR' and img_path.endswith('SAR.tif'):
-                filtered_dataset.append((img_path, pid, camid, trackid))
-            elif modality == 'RGB' and img_path.endswith('RGB.tif'):
-                filtered_dataset.append((img_path, pid, camid, trackid))
-        return filtered_dataset
+        eval_modes = ['rgb_sar', 'sar_rgb', 'rgb_mixed', 'sar_mixed']
+
+        def summarize_split(query_dir, gallery_dir):
+            query_data = self._process_dir(query_dir, relabel=False)
+            gallery_data = self._process_dir(gallery_dir, relabel=False)
+            num_query_pids, num_query_imgs, num_query_cams, _ = self.get_imagedata_info(query_data)
+            num_gallery_pids, num_gallery_imgs, num_gallery_cams, _ = self.get_imagedata_info(gallery_data)
+            return (num_query_pids, num_query_imgs, num_query_cams,
+                    num_gallery_pids, num_gallery_imgs, num_gallery_cams)
+
+        print("Dataset statistics:")
+        print("  -------------------------------------------------------------")
+        print("  subset     | eval_mode | # ids | # images | # cameras")
+        print("  -------------------------------------------------------------")
+        if train is not None:
+            print("  train      |    all    | {:5d} | {:8d} | {:9d}".format(num_train_pids, num_train_imgs, num_train_cams))
+        for mode in eval_modes:
+            test_query_dir = osp.join(self.dataset_dir, 'test', mode, 'query')
+            val_query_dir = osp.join(self.dataset_dir, 'val', mode, 'query')
+            test_gallery_dir = osp.join(self.dataset_dir, 'test', 'gallery')
+            val_gallery_dir = osp.join(self.dataset_dir, 'val', 'gallery')
+            (num_query_pids, num_query_imgs, num_query_cams,
+             num_gallery_pids, num_gallery_imgs, num_gallery_cams) = summarize_split(test_query_dir, test_gallery_dir)
+            (num_query_val_pids, num_query_val_imgs, num_query_val_cams,
+             num_gallery_val_pids, num_gallery_val_imgs, num_gallery_val_cams) = summarize_split(val_query_dir, val_gallery_dir)
+
+            print("  query      | {:8s} | {:5d} | {:8d} | {:9d}".format(mode, num_query_pids, num_query_imgs, num_query_cams))
+            print("  gallery    | {:8s} | {:5d} | {:8d} | {:9d}".format(mode, num_gallery_pids, num_gallery_imgs, num_gallery_cams))
+            print("  query_val  | {:8s} | {:5d} | {:8d} | {:9d}".format(mode, num_query_val_pids, num_query_val_imgs, num_query_val_cams))
+            print("  gallery_val| {:8s} | {:5d} | {:8d} | {:9d}".format(mode, num_gallery_val_pids, num_gallery_val_imgs, num_gallery_val_cams))
+            print("  -------------------------------------------------------------")
 
     def get_imagedata_info_pair(self, data):
         pids, cams, tracks = [], [], []
@@ -116,17 +123,18 @@ class HOSS(BaseImageDataset):
         return num_pids, num_imgs, num_cams, num_views
 
     def _check_before_run(self):
-        """Check if all files are available before going deeper"""
         if not osp.exists(self.dataset_dir):
             raise RuntimeError("'{}' is not available".format(self.dataset_dir))
         if not osp.exists(self.train_dir):
             raise RuntimeError("'{}' is not available".format(self.train_dir))
-        if not osp.exists(self.query_dir):
-            raise RuntimeError("'{}' is not available".format(self.query_dir))
+        for query_dir in self.query_dir:
+            if not osp.exists(query_dir):
+                raise RuntimeError("'{}' is not available".format(query_dir))
         if not osp.exists(self.gallery_dir):
             raise RuntimeError("'{}' is not available".format(self.gallery_dir))
-        if not osp.exists(self.query_val_dir):
-            raise RuntimeError("'{}' is not available".format(self.query_val_dir))
+        for query_val_dir in self.query_val_dir:
+            if not osp.exists(query_val_dir):
+                raise RuntimeError("'{}' is not available".format(query_val_dir))
         if not osp.exists(self.gallery_val_dir):
             raise RuntimeError("'{}' is not available".format(self.gallery_val_dir))
 
