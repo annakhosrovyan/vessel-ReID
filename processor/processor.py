@@ -1,8 +1,10 @@
 import os
+import json
 import time
 import torch
 import wandb
 import logging
+import numpy as np
 import torch.nn as nn
 import torch.distributed as dist
 import torchvision.transforms as T
@@ -11,7 +13,7 @@ from datasets.hoss import HOSS
 from datasets.optisar_pair_val import OptiSarPairVal
 from utils.meter import AverageMeter
 from utils.wandb_utils import configure_wandb_metrics
-from utils.metrics import R1_mAP_eval
+from utils.metrics import R1_mAP_eval, euclidean_distance
 from datasets.bases import ImageDataset
 from torch.utils.data import DataLoader
 from torch.amp import autocast, GradScaler
@@ -21,7 +23,8 @@ from datasets.make_dataloader import val_pair_collate_fn, val_collate_fn
 
 
 def _setup_validation_dataloader(cfg):
-    val_loader_hoss, num_query_hoss, val_loader_optisar_pair = None, 0, None
+    val_loaders_hoss = {}
+    val_loader_optisar_pair = None
     
     val_transforms = T.Compose([
         T.Resize(cfg.INPUT.SIZE_TEST),
@@ -34,14 +37,16 @@ def _setup_validation_dataloader(cfg):
                                 std=cfg.INPUT.PIXEL_STD_SAR)
 
 
-    if cfg.SOLVER.TRACK_VALIDATION_METRICS:
-        val_ds = HOSS()
+    eval_modes = ['rgb_sar', 'sar_rgb', 'rgb_mixed', 'sar_mixed', 'all']
+    for mode in eval_modes:
+        val_ds = HOSS(root=cfg.DATASETS.ROOT_DIR, eval_mode=mode, verbose=False)
         val_set_hoss = ImageDataset(val_ds.query_val + val_ds.gallery_val, val_transforms, normalize_rgb=normalize_rgb, normalize_sar=normalize_sar)
         val_loader_hoss = DataLoader(
             val_set_hoss, batch_size=cfg.TEST.IMS_PER_BATCH, shuffle=False, num_workers=cfg.DATALOADER.NUM_WORKERS,
             collate_fn=val_collate_fn
         )
         num_query_hoss = len(val_ds.query_val)
+        val_loaders_hoss[mode] = (val_loader_hoss, num_query_hoss)
 
     if cfg.SOLVER.TRACK_VALIDATION_METRICS_OPTISAR:
         if cfg.SOLVER.IMS_PER_BATCH % 2 != 0:
@@ -53,7 +58,7 @@ def _setup_validation_dataloader(cfg):
             collate_fn=val_pair_collate_fn
         )
 
-    return val_loader_hoss, num_query_hoss, val_loader_optisar_pair
+    return val_loaders_hoss, val_loader_optisar_pair
 
 
 def do_train_pair(cfg, 
@@ -86,7 +91,7 @@ def do_train_pair(cfg,
         )
         configure_wandb_metrics()
 
-    val_loader_hoss, num_query_hoss, val_loader_optisar_pair = _setup_validation_dataloader(cfg)
+    val_loaders_hoss, val_loader_optisar_pair = _setup_validation_dataloader(cfg)
     validation_metrics_tracker = ValidationMetricsTracker(cfg, local_rank)
 
     if device:
@@ -99,6 +104,10 @@ def do_train_pair(cfg,
     scaler = GradScaler('cuda')
     if scaler_state_dict is not None:
         scaler.load_state_dict(scaler_state_dict)
+
+    best_mAP = 0.0
+    best_val_acc = -1.0
+    best_val_theta = float("nan")
 
     # train pair
     if cfg.MODEL.PAIR:
@@ -210,8 +219,24 @@ def do_train_pair(cfg,
                 })
         
             if epoch % eval_period == 0:
-                if val_loader_hoss is not None:
-                    validation_metrics_tracker.run(model=model, epoch=epoch, val_loader=val_loader_hoss, num_query_val=num_query_hoss)
+                best_acc, best_theta, mAP_all, mINP_all, cmc_all = validation_metrics_tracker.run(model=model, epoch=epoch, val_loaders=val_loaders_hoss)
+                if local_rank == 0 and best_acc > best_val_acc:
+                    best_val_acc = best_acc
+                    best_val_theta = best_theta
+                    state_dict = model.module.state_dict() if hasattr(model, "module") else model.state_dict()
+                    torch.save(state_dict, os.path.join(cfg.OUTPUT_DIR, 'best_model_threshold_acc.pth'))
+                    threshold_payload = {
+                        "epoch": epoch,
+                        "threshold": float(best_val_theta),
+                        "accuracy": float(best_val_acc),
+                    }
+                    with open(os.path.join(cfg.OUTPUT_DIR, "best_threshold.json"), "w") as f:
+                        json.dump(threshold_payload, f)
+                if local_rank == 0 and mAP_all > best_mAP:
+                    best_mAP = mAP_all
+                    state_dict = model.module.state_dict() if hasattr(model, "module") else model.state_dict()
+                    torch.save(state_dict, os.path.join(cfg.OUTPUT_DIR, 'best_model_mAP.pth'))
+                    logger.info("New best model saved with mAP: {:.1%} at epoch {}".format(best_mAP, epoch))
                 if val_loader_optisar_pair is not None:
                     validation_metrics_tracker.run_pair(model, epoch, val_loader_optisar_pair, collection_name='optisar')
 
@@ -240,7 +265,7 @@ def do_train(cfg,
     logger.info('start training')
     _LOCAL_PROCESS_GROUP = None
 
-    _, _, val_loader_optisar_pair = _setup_validation_dataloader(cfg)
+    val_loaders_hoss, val_loader_optisar_pair = _setup_validation_dataloader(cfg)
     validation_metrics_tracker = ValidationMetricsTracker(cfg, local_rank)
 
     if device:
@@ -258,6 +283,8 @@ def do_train(cfg,
         scaler.load_state_dict(scaler_state_dict)
 
     best_mAP = 0.0
+    best_val_acc = -1.0
+    best_val_theta = float("nan")
     if wandb.run is None:   # prevent wandb from initializing multiple times during pretraining
         wandb.init(
             project=cfg.WANDB.PROJECT,
@@ -350,82 +377,31 @@ def do_train(cfg,
                 torch.save(checkpoint, os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_checkpoint_latest.pth"))
 
         if epoch % eval_period == 0:
-            if cfg.MODEL.DIST_TRAIN:
-                if dist.get_rank() == 0:
-                    model.eval()
-                    for n_iter, (img, vid, camid, camids, target_view, _, img_wh) in enumerate(val_loader):
-                        with torch.no_grad():
-                            img = img.to(device)
-                            camids = camids.to(device)
-                            target_view = target_view.to(device)
-                            img_wh = img_wh.to(device)
-                            feat = model(img, cam_label=camids, view_label=target_view, img_wh=img_wh)
-                            evaluator.update((feat, vid, camid))
-                    cmc, mAP, mINP, distmat, pids, camids, _, _ = evaluator.compute()
-
-                    if cfg.SOLVER.TRACK_VALIDATION_METRICS:
-                        validation_metrics_tracker.log_distance_stats(distmat, pids, camids, evaluator.num_query, collection_name='val')
-                        validation_metrics_tracker.log_posneg_margins(distmat, pids, camids, evaluator.num_query, collection_name='val', epoch=epoch)
-                        validation_metrics_tracker.log_posneg_margins_by_modalities(distmat, pids, camids, evaluator.num_query, collection_name='val', epoch=epoch)
-
-                    if val_loader_optisar_pair is not None:
-                        validation_metrics_tracker.run_pair(model, epoch, val_loader_optisar_pair, collection_name='optisar')
-
-                    logger.info("Validation Results - Epoch: {}".format(epoch))
-                    logger.info("mAP: {:.1%}".format(mAP))
-                    logger.info("mINP: {:.1%}".format(mINP))
-                    for r in [1, 5, 10]:
-                        logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
-                    
-                    if mAP > best_mAP:
-                        best_mAP = mAP
-                        torch.save(model.state_dict(),
-                                   os.path.join(cfg.OUTPUT_DIR, 'best_model.pth'))
-                        logger.info("New best model saved with mAP: {:.1%} at epoch {}".format(best_mAP, epoch))
-                    
-                    torch.cuda.empty_cache()
-            else:
-                model.eval()
-                for n_iter, (img, vid, camid, camids, target_view, _, img_wh) in enumerate(val_loader):
-                    with torch.no_grad():
-                        img = img.to(device)
-                        camids = camids.to(device)
-                        img_wh = img_wh.to(device)
-                        feat = model(img, cam_label=camids, img_wh=img_wh)
-                        evaluator.update((feat, vid, camid))
-                cmc, mAP, mINP, distmat, pids, camids, _, _ = evaluator.compute()
-
-                if cfg.SOLVER.TRACK_VALIDATION_METRICS:
-                    validation_metrics_tracker.log_distance_stats(distmat, pids, camids, evaluator.num_query, collection_name='hoss')
-                    validation_metrics_tracker.log_posneg_margins(distmat, pids, camids, evaluator.num_query, collection_name='hoss', epoch=epoch)
-                    validation_metrics_tracker.log_posneg_margins_by_modalities(distmat, pids, camids, evaluator.num_query, collection_name='hoss', epoch=epoch)
-                    
-                    if val_loader_optisar_pair is not None:
-                        validation_metrics_tracker.run_pair(model, epoch, val_loader_optisar_pair, collection_name='optisar')
-
-                logger.info("Validation Results - Epoch: {}".format(epoch))
-                logger.info("mAP: {:.1%}".format(mAP))
-                logger.info("mINP: {:.1%}".format(mINP))
-                for r in [1, 5, 10]:
-                    logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
-                
-                if mAP > best_mAP:
-                    best_mAP = mAP
-                    torch.save(model.state_dict(),
-                               os.path.join(cfg.OUTPUT_DIR, 'best_model.pth'))
+            if (cfg.MODEL.DIST_TRAIN and dist.get_rank() == 0) or (not cfg.MODEL.DIST_TRAIN and local_rank == 0):
+                best_acc, best_theta, mAP_all, mINP_all, cmc_all = validation_metrics_tracker.run(model=model, epoch=epoch, val_loaders=val_loaders_hoss)
+                if best_acc > best_val_acc:
+                    best_val_acc = best_acc
+                    best_val_theta = best_theta
+                    state_dict = model.module.state_dict() if hasattr(model, "module") else model.state_dict()
+                    torch.save(state_dict, os.path.join(cfg.OUTPUT_DIR, 'best_model_threshold_acc.pth'))
+                    threshold_payload = {
+                        "epoch": epoch,
+                        "threshold": float(best_val_theta),
+                        "accuracy": float(best_val_acc),
+                    }
+                    with open(os.path.join(cfg.OUTPUT_DIR, "best_threshold.json"), "w") as f:
+                        json.dump(threshold_payload, f)
+                    logger.info("New best model saved with threshold accuracy: {:.1%} at epoch {}".format(best_val_acc, epoch))
+                if mAP_all > best_mAP:
+                    best_mAP = mAP_all
+                    state_dict = model.module.state_dict() if hasattr(model, "module") else model.state_dict()
+                    torch.save(state_dict, os.path.join(cfg.OUTPUT_DIR, 'best_model_mAP.pth'))
                     logger.info("New best model saved with mAP: {:.1%} at epoch {}".format(best_mAP, epoch))
-                
                 torch.cuda.empty_cache()
-
-            if local_rank == 0:
-                wandb.log({
-                    "epoch": epoch,
-                    "val_mAP": mAP,
-                    "val_mINP": mINP,
-                    "val_rank1": cmc[0],
-                    "val_rank5": cmc[4],
-                    "val_rank10": cmc[9]
-                })
+            if (val_loader_optisar_pair is not None and 
+                ((cfg.MODEL.DIST_TRAIN and dist.get_rank() == 0) or 
+                 (not cfg.MODEL.DIST_TRAIN and local_rank == 0))):
+                validation_metrics_tracker.run_pair(model, epoch, val_loader_optisar_pair, collection_name='optisar')
 
         if local_rank == 0:
             wandb.log({
@@ -477,4 +453,96 @@ def do_inference(cfg,
     logger.info("mINP: {:.1%}".format(mINP))
     for r in [1, 5, 10]:
         logger.info("CMC curve, Rank-{:<3}:{:.1%}".format(r, cmc[r - 1]))
+    eval_modes = ["rgb_sar", "sar_rgb", "rgb_mixed", "sar_mixed", "all"]
+
+    def resolve_threshold_path():
+        if cfg.TEST.WEIGHT:
+            weight_dir = os.path.dirname(cfg.TEST.WEIGHT)
+            candidate = os.path.join(weight_dir, "best_threshold.json")
+            if os.path.exists(candidate):
+                return candidate
+        candidate = os.path.join(cfg.OUTPUT_DIR, "best_threshold.json")
+        if os.path.exists(candidate):
+            return candidate
+        raise FileNotFoundError("best_threshold.json not found in checkpoint directory or OUTPUT_DIR")
+
+    def load_threshold(threshold_path):
+        with open(threshold_path, "r") as f:
+            payload = json.load(f)
+        if "threshold" not in payload:
+            raise KeyError("best_threshold.json missing 'threshold'")
+        return float(payload["threshold"])
+
+    def accuracy_for_theta(entries, theta):
+        if len(entries) == 0:
+            return 0.0
+        correct = 0
+        for pid, pred_pid, dist, has_pair in entries:
+            if dist > theta:
+                if not has_pair:
+                    correct += 1
+            else:
+                if has_pair and pred_pid == pid:
+                    correct += 1
+        return correct / len(entries)
+
+    threshold_path = resolve_threshold_path()
+    theta = load_threshold(threshold_path)
+    logger.info("Using threshold {:.6f} from {}".format(theta, threshold_path))
+
+    val_transforms = T.Compose([
+        T.Resize(cfg.INPUT.SIZE_TEST),
+        T.ToTensor(),
+    ])
+    normalize_rgb = T.Normalize(mean=cfg.INPUT.PIXEL_MEAN_RGB, std=cfg.INPUT.PIXEL_STD_RGB)
+    normalize_sar = T.Normalize(mean=cfg.INPUT.PIXEL_MEAN_SAR, std=cfg.INPUT.PIXEL_STD_SAR)
+    num_workers = cfg.DATALOADER.NUM_WORKERS
+
+    all_entries = []
+    for mode in eval_modes:
+        ds = HOSS(root=cfg.DATASETS.ROOT_DIR, eval_mode=mode, verbose=False)
+        test_set = ImageDataset(ds.query + ds.gallery, val_transforms, normalize_rgb=normalize_rgb, normalize_sar=normalize_sar)
+        loader = DataLoader(
+            test_set,
+            batch_size=cfg.TEST.IMS_PER_BATCH,
+            shuffle=False,
+            num_workers=num_workers,
+            collate_fn=val_collate_fn,
+        )
+        feats = []
+        pids = []
+        camids = []
+        for _, (img, pid, camid, camids_batch, target_view, imgpath, img_wh) in enumerate(loader):
+            with torch.no_grad():
+                img = img.to(device)
+                camids_batch = camids_batch.to(device)
+                img_wh = img_wh.to(device)
+                feat = model(img, cam_label=camids_batch, img_wh=img_wh)
+                feats.append(feat.cpu())
+                pids.extend(pid)
+                camids.extend(camid)
+        feats = torch.cat(feats, dim=0)
+        if str(cfg.TEST.FEAT_NORM).lower() in ("yes", "true", "1", "y", "t", "on"):
+            feats = torch.nn.functional.normalize(feats, dim=1, p=2)
+        q_count = len(ds.query)
+        qf = feats[:q_count]
+        gf = feats[q_count:]
+        distmat = euclidean_distance(qf, gf)
+        q_pids = np.asarray(pids[:q_count])
+        g_pids = np.asarray(pids[q_count:])
+        g_pid_set = set(int(pid) for pid in g_pids)
+        min_indices = np.argmin(distmat, axis=1)
+        entries = []
+        for i in range(q_pids.shape[0]):
+            pred_pid = int(g_pids[min_indices[i]])
+            dist = float(distmat[i, min_indices[i]])
+            pid = int(q_pids[i])
+            has_pair = pid in g_pid_set
+            entries.append((pid, pred_pid, dist, has_pair))
+        acc = accuracy_for_theta(entries, theta)
+        logger.info("Test threshold accuracy {}: {:.1%}".format(mode, acc))
+        all_entries.extend(entries)
+
+    overall_acc = accuracy_for_theta(all_entries, theta)
+    logger.info("Test threshold accuracy all modes: {:.1%}".format(overall_acc))
     return cmc[0], cmc[4]

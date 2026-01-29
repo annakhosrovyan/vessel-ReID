@@ -62,6 +62,29 @@ def compute_pair_distance_stats(distmat: np.ndarray,
             stats[f"{k}_{stat_name}"] = stat_val
     return stats
 
+def compute_threshold_accuracy(entries):
+    if len(entries) == 0:
+        return 0.0, float("nan")
+    distances = np.array([entry[2] for entry in entries], dtype=np.float64)
+    thetas = np.unique(distances)
+    best_acc = -1.0
+    best_theta = float(thetas[0])
+    total = len(entries)
+    for theta in thetas:
+        correct = 0
+        for pid, pred_pid, dist, has_pair in entries:
+            if dist > theta:
+                if not has_pair:
+                    correct += 1
+            else:
+                if has_pair and pred_pid == pid:
+                    correct += 1
+        acc = correct / total
+        if acc > best_acc or (acc == best_acc and theta < best_theta):
+            best_acc = acc
+            best_theta = float(theta)
+    return float(best_acc), float(best_theta)
+
 
 class ValidationMetricsTracker:
     def __init__(self, cfg, local_rank):
@@ -69,79 +92,85 @@ class ValidationMetricsTracker:
         self.cfg = cfg
         self.local_rank = local_rank
 
-    def run(self, model, epoch, val_loader=None, num_query_val=0):
-        if val_loader is None or self.local_rank != 0:
-            return 0.0
+
+    def run(self, model, epoch, val_loaders=None):
+        if val_loaders is None or self.local_rank != 0:
+            return 0.0, float("nan"), 0.0, 0.0, np.zeros(0, dtype=np.float32)
 
         self.logger.info(f"Epoch {epoch}    tracking validation metrics...")
-        evaluator = R1_mAP_eval(num_query_val, max_rank=50, feat_norm=self.cfg.TEST.FEAT_NORM)
-        evaluator.reset()
         model.eval()
 
-        for _, (img, vid, camid, camids, target_view, _, img_wh) in enumerate(val_loader):
-            with torch.no_grad():
-                img = img.to("cuda")
-                camids = camids.to("cuda")
-                img_wh = img_wh.to("cuda")
+        mode_results = {}
+        all_best_acc = 0.0
+        all_best_theta = float("nan")
 
-                feat = model(img, cam_label=camids, img_wh=img_wh)
-                evaluator.update((feat, vid, camid))
+        for mode, (val_loader, num_query_val) in val_loaders.items():
+            evaluator = R1_mAP_eval(num_query_val, max_rank=50, feat_norm=self.cfg.TEST.FEAT_NORM)
+            evaluator.reset()
 
-        cmc, mAP, mINP, distmat, pids, camids, qf, gf = evaluator.compute()
-        self.log_metrics(epoch, mAP, mINP, cmc)
+            for _, (img, vid, camid, camids, target_view, _, img_wh) in enumerate(val_loader):
+                with torch.no_grad():
+                    img = img.to("cuda")
+                    camids = camids.to("cuda")
+                    img_wh = img_wh.to("cuda")
 
-        if self.cfg.SOLVER.TRACK_VALIDATION_METRICS:
-            self.log_distance_stats(distmat, pids, camids, evaluator.num_query, collection_name='hoss')
-            self.log_posneg_margins(distmat, pids, camids, evaluator.num_query, collection_name='hoss', epoch=epoch)
-            self.log_posneg_margins_by_modalities(distmat, pids, camids, evaluator.num_query, collection_name='hoss', epoch=epoch)
-        
-        if hasattr(model, "module"):
-            logit_scale = model.module.logit_scale.exp().item()
-        else:
-            logit_scale = model.logit_scale.exp().item()
+                    feat = model(img, cam_label=camids, img_wh=img_wh)
+                    evaluator.update((feat, vid, camid))
 
-        q_pids = np.asarray(pids[:evaluator.num_query])
-        g_pids = np.asarray(pids[evaluator.num_query:])
-        q_camids = np.asarray(camids[:evaluator.num_query])
-        g_camids = np.asarray(camids[evaluator.num_query:])
+            cmc, mAP, mINP, distmat, pids, camids, qf, gf = evaluator.compute()
+            mode_results[mode] = (mAP, mINP, cmc)
 
-        rgb, sar = 0, 1
-        pid_to_rgb = {}
-        pid_to_sar = {}
+            logger = logging.getLogger("transreid.train")
+            logger.info(f"HOSS {mode} - mAP: {mAP:.1%}, mINP: {mINP:.1%}, Rank-1: {cmc[0]:.1%}")
 
-        for i, (pid_v, cid_v) in enumerate(zip(q_pids, q_camids)):
-            if cid_v == rgb and pid_v not in pid_to_rgb:
-                pid_to_rgb[pid_v] = ("q", i)
-            if cid_v == sar and pid_v not in pid_to_sar:
-                pid_to_sar[pid_v] = ("q", i)
-        for j, (pid_v, cid_v) in enumerate(zip(g_pids, g_camids)):
-            if cid_v == rgb and pid_v not in pid_to_rgb:
-                pid_to_rgb[pid_v] = ("g", j)
-            if cid_v == sar and pid_v not in pid_to_sar:
-                pid_to_sar[pid_v] = ("g", j)
+            wandb.log({
+                "epoch": epoch,
+                f"hoss_{mode}/mAP": float(mAP),
+                f"hoss_{mode}/mINP": float(mINP),
+                f"hoss_{mode}/rank1": float(cmc[0]),
+                f"hoss_{mode}/rank5": float(cmc[4]),
+                f"hoss_{mode}/rank10": float(cmc[9]),
+            })
 
-        common = [pid for pid in pid_to_rgb if pid in pid_to_sar]
-        rgb_feats = []
-        sar_feats = []
-        for pid_v in common:
-            src_r, idx_r = pid_to_rgb[pid_v]
-            src_s, idx_s = pid_to_sar[pid_v]
-            rgb_feat = qf[idx_r] if src_r == "q" else gf[idx_r]
-            sar_feat = qf[idx_s] if src_s == "q" else gf[idx_s]
-            rgb_feats.append(rgb_feat)
-            sar_feats.append(sar_feat)
-        rgb_mat = torch.stack(rgb_feats, dim=0)
-        sar_mat = torch.stack(sar_feats, dim=0)
-        sim_union = torch.matmul(sar_mat, rgb_mat.t()) * float(logit_scale)
-        loss_sar_rgb = clip_loss(sim_union)
+            collection_name = f"hoss_{mode}"
+            self.log_distance_stats(distmat, pids, camids, evaluator.num_query, collection_name=collection_name)
+            self.log_posneg_margins(distmat, pids, camids, evaluator.num_query, collection_name=collection_name, epoch=epoch)
+            self.log_posneg_margins_by_modalities(distmat, pids, camids, evaluator.num_query, collection_name=collection_name, epoch=epoch)
+
+            q_pids = np.asarray(pids[:evaluator.num_query])
+            g_pids = np.asarray(pids[evaluator.num_query:])
+            g_pid_set = set(int(pid) for pid in g_pids)
+            min_indices = np.argmin(distmat, axis=1)
+            threshold_entries = []
+            for i in range(q_pids.shape[0]):
+                pred_pid = int(g_pids[min_indices[i]])
+                dist = float(distmat[i, min_indices[i]])
+                pid = int(q_pids[i])
+                has_pair = pid in g_pid_set
+                threshold_entries.append((pid, pred_pid, dist, has_pair))
+
+            best_acc, best_theta = compute_threshold_accuracy(threshold_entries)
+            wandb.log({
+                "epoch": epoch,
+                f"hoss_{mode}/threshold_accuracy": float(best_acc),
+                f"hoss_{mode}/threshold_theta": float(best_theta),
+            })
+
+            if mode == "all":
+                all_best_acc = best_acc
+                all_best_theta = best_theta
+                self.log_metrics(epoch, float(mAP), float(mINP), cmc)
+
+        all_mAP, all_mINP, all_cmc = mode_results["all"]
+        logger = logging.getLogger("transreid.train")
+        logger.info(f"HOSS threshold accuracy: {all_best_acc:.1%} with theta {all_best_theta:.6f}")
         wandb.log({
-            "val/epoch": epoch,
             "epoch": epoch,
-            "hoss/clip_loss": float(loss_sar_rgb.item()),
-            "hoss/clip_pairs": len(common),
+            "val/threshold_accuracy": float(all_best_acc),
+            "val/threshold_theta": float(all_best_theta),
         })
 
-        return mAP, mINP
+        return all_best_acc, all_best_theta, float(all_mAP), float(all_mINP), all_cmc
 
     def run_pair(self, model, epoch, val_loader=None, collection_name='pretrain'):
         if val_loader is None or self.local_rank != 0:
