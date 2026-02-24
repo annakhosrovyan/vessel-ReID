@@ -28,7 +28,7 @@ if __name__ == "__main__":
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    logger = setup_logger("transreid", output_dir, if_train=False)
+    logger = setup_logger("train", output_dir, if_train=False)
     logger.info(args)
 
     if args.config_file != "":

@@ -215,6 +215,8 @@ class build_transformer(nn.Module):
 
         self.train_pair = False
         self.logit_scale = nn.Parameter(torch.tensor(logit_scale_init_value))
+        self.rgb_channel_idxs = list(getattr(cfg.MODEL, 'RGB_CHANNELS', [0, 1, 2]))
+        self.sar_channel_idxs = list(getattr(cfg.MODEL, 'SAR_CHANNELS', [10, 11]))
 
 
     def train_with_pair(self,):
@@ -234,9 +236,9 @@ class build_transformer(nn.Module):
             B = x.shape[0]
             rgb_idx = torch.nonzero(cam_label == 0, as_tuple=True)[0]
             sar_idx = torch.nonzero(cam_label == 1, as_tuple=True)[0]
-            
-            rgb_out = self.base(x[rgb_idx], channel_idxs=[0, 1, 2]) if rgb_idx.numel() > 0 else None
-            sar_out = self.base(x[sar_idx][:, :2, :, :], channel_idxs=[10, 11]) if sar_idx.numel() > 0 else None
+            n_sar_ch = len(self.sar_channel_idxs)
+            rgb_out = self.base(x[rgb_idx], channel_idxs=self.rgb_channel_idxs) if rgb_idx.numel() > 0 else None
+            sar_out = self.base(x[sar_idx][:, :n_sar_ch, :, :], channel_idxs=self.sar_channel_idxs) if sar_idx.numel() > 0 else None
             
             feat_shape = rgb_out.shape[1:] if rgb_out is not None else sar_out.shape[1:]
             global_feat = torch.empty((B,) + feat_shape, dtype=x.dtype, device=x.device)

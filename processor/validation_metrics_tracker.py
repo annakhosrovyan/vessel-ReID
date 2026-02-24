@@ -120,7 +120,7 @@ class ValidationMetricsTracker:
             cmc, mAP, mINP, distmat, pids, camids, qf, gf = evaluator.compute()
             mode_results[mode] = (mAP, mINP, cmc)
 
-            logger = logging.getLogger("transreid.train")
+            logger = logging.getLogger("train")
             logger.info(f"HOSS {mode} - mAP: {mAP:.1%}, mINP: {mINP:.1%}, Rank-1: {cmc[0]:.1%}")
 
             wandb.log({
@@ -162,7 +162,7 @@ class ValidationMetricsTracker:
                 self.log_metrics(epoch, float(mAP), float(mINP), cmc)
 
         all_mAP, all_mINP, all_cmc = mode_results["all"]
-        logger = logging.getLogger("transreid.train")
+        logger = logging.getLogger("train")
         logger.info(f"HOSS threshold accuracy: {all_best_acc:.1%} with theta {all_best_theta:.6f}")
         wandb.log({
             "epoch": epoch,

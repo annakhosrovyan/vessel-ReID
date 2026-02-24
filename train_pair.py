@@ -11,6 +11,7 @@ from solver import make_optimizer
 from processor import do_train_pair
 from utils.logger import setup_logger
 from datasets import make_dataloader_pair
+from datasets.multi_clip_pair import make_multi_dataset_clip_loader
 from solver.scheduler_factory import create_scheduler
 from utils.checkpoint_utils import resume_from_checkpoint
 
@@ -24,15 +25,17 @@ def set_seed(seed):
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    torch.use_deterministic_algorithms(True)
+    torch.use_deterministic_algorithms(True, warn_only=True)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pretraining")
     parser.add_argument("--config_file", default="", help="path to config file", type=str)
     parser.add_argument("opts", help="Modify config options using the command-line", default=None, nargs=argparse.REMAINDER)
-    parser.add_argument("--local-rank", default=0, type=int)
+    parser.add_argument("--local-rank", default=-1, type=int)
     args = parser.parse_args()
+    if args.local_rank == -1:
+        args.local_rank = int(os.environ.get("LOCAL_RANK", 0))
 
     if args.config_file != "":
         cfg.merge_from_file(args.config_file)
@@ -48,7 +51,7 @@ if __name__ == "__main__":
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    logger = setup_logger("transreid", output_dir, if_train=True)
+    logger = setup_logger("train", output_dir, if_train=True)
     logger.info("Saving model in the path :{}".format(cfg.OUTPUT_DIR))
     logger.info(args)
 
@@ -63,7 +66,11 @@ if __name__ == "__main__":
         torch.distributed.init_process_group(backend="nccl", init_method="env://")
 
     os.environ["CUDA_VISIBLE_DEVICES"] = cfg.MODEL.DEVICE_ID
-    train_loader_pair, num_classes, camera_num = make_dataloader_pair(cfg)
+    use_multi_dataset = getattr(cfg.SOLVER, "USE_MULTI_PRETRAIN", False)
+    if use_multi_dataset:
+        train_loader_pair, num_classes, camera_num = make_multi_dataset_clip_loader(cfg)
+    else:
+        train_loader_pair, num_classes, camera_num = make_dataloader_pair(cfg)
 
     model = make_model(cfg, num_class=num_classes, camera_num=camera_num)
 

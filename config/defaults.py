@@ -67,6 +67,9 @@ _C.MODEL.SSE = False
 # Pretrain with images pairs
 _C.MODEL.PAIR = False
 
+_C.MODEL.RGB_CHANNELS = [0, 1, 2]
+_C.MODEL.SAR_CHANNELS = [10, 11]
+
 # -----------------------------------------------------------------------------
 # INPUT
 # -----------------------------------------------------------------------------
@@ -171,6 +174,7 @@ _C.SOLVER.TRACK_VALIDATION_METRICS = True
 _C.SOLVER.TRACK_VALIDATION_METRICS_OPTISAR = True
 _C.SOLVER.PRETRAIN_TRACK_VALIDATION_DIR = ''
 _C.SOLVER.RESUME_FROM = ""
+_C.SOLVER.USE_MULTI_PRETRAIN = False
 
 # ---------------------------------------------------------------------------- #
 # TEST

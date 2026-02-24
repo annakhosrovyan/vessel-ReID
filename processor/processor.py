@@ -1,10 +1,11 @@
 import os
 import json
 import time
-import torch
-import wandb
 import logging
 import numpy as np
+import torch
+import wandb
+from tqdm import tqdm
 import torch.nn as nn
 import torch.distributed as dist
 import torchvision.transforms as T
@@ -78,7 +79,7 @@ def do_train_pair(cfg,
     device = "cuda"
     epochs = cfg.SOLVER.MAX_EPOCHS
 
-    logger = logging.getLogger("transreid.train")
+    logger = logging.getLogger("train")
     logger.info("start training")
     _LOCAL_PROCESS_GROUP = None
 
@@ -121,8 +122,13 @@ def do_train_pair(cfg,
             scheduler.step(epoch)
             if hasattr(train_loader_pair, "sampler") and hasattr(train_loader_pair.sampler, "set_epoch"):
                 train_loader_pair.sampler.set_epoch(epoch)
+            if hasattr(train_loader_pair, "set_epoch"):
+                train_loader_pair.set_epoch(epoch)
             model.train()
-            for n_iter, (img, vid, target_cam) in enumerate(train_loader_pair):
+            batch_iter = train_loader_pair
+            if not cfg.MODEL.DIST_TRAIN or local_rank == 0:
+                batch_iter = tqdm(batch_iter, total=len(train_loader_pair), unit="batch", leave=False)
+            for n_iter, (img, vid, target_cam) in enumerate(batch_iter):
                 optimizer.zero_grad()
                 img = img.to(device)
                 target = vid.to(device)
@@ -158,7 +164,7 @@ def do_train_pair(cfg,
                 loss_meter.update(loss.item(), img.shape[0])
 
                 torch.cuda.synchronize()
-                if (n_iter + 1) % log_period == 0:
+                if (n_iter + 1) % log_period == 0 and (not cfg.MODEL.DIST_TRAIN or local_rank == 0):
                     logger.info(
                         "Epoch[{}] Iteration[{}/{}] Loss: {:.3f}, Base Lr: {:.2e}, GradNorm: {:.3f}, LogitScale: {:.3f}".format(
                             epoch, (n_iter + 1), len(train_loader_pair), loss_meter.avg, 
@@ -261,7 +267,7 @@ def do_train(cfg,
     device = "cuda"
     epochs = cfg.SOLVER.MAX_EPOCHS
 
-    logger = logging.getLogger("transreid.train")
+    logger = logging.getLogger("train")
     logger.info('start training')
     _LOCAL_PROCESS_GROUP = None
 

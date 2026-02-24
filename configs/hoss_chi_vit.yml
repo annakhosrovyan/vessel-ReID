@@ -14,6 +14,8 @@ MODEL:
   MIE_COE: 3.0
   SSE: False
   PAIR: False
+  RGB_CHANNELS: [0, 1, 2]
+  SAR_CHANNELS: [10, 11]
 
 INPUT:
   SIZE_TRAIN: [224, 224]
