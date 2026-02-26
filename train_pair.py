@@ -1,4 +1,5 @@
 import os
+import warnings
 import torch
 import random
 import argparse
@@ -8,24 +9,30 @@ from config import cfg
 from loss import make_loss
 from model import make_model
 from solver import make_optimizer
-from processor import do_train_pair
-from utils.logger import setup_logger
+from processor import do_train_pair, do_train_pair_ibot
+from utils.logdir import setup_log_dir
 from datasets import make_dataloader_pair
 from datasets.multi_clip_pair import make_multi_dataset_clip_loader
 from solver.scheduler_factory import create_scheduler
 from utils.checkpoint_utils import resume_from_checkpoint
 
 
-def set_seed(seed):
-    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+def set_seed(seed, deterministic=True):
     torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
     random.seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    torch.use_deterministic_algorithms(True, warn_only=True)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        # os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    else:
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = True
+        torch.use_deterministic_algorithms(False)
 
 
 if __name__ == "__main__":
@@ -42,30 +49,17 @@ if __name__ == "__main__":
     cfg.merge_from_list(args.opts)
     cfg.freeze()
 
-    set_seed(cfg.SOLVER.SEED)
+    if not cfg.MODEL.DIST_TRAIN:
+        os.environ["CUDA_VISIBLE_DEVICES"] = cfg.MODEL.DEVICE_ID
 
     if cfg.MODEL.DIST_TRAIN:
         torch.cuda.set_device(args.local_rank)
+    set_seed(cfg.SOLVER.SEED, deterministic=cfg.SOLVER.DETERMINISTIC)
 
-    output_dir = cfg.OUTPUT_DIR
-    if output_dir and not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    logger = setup_logger("train", output_dir, if_train=True)
-    logger.info("Saving model in the path :{}".format(cfg.OUTPUT_DIR))
-    logger.info(args)
-
-    if args.config_file != "":
-        logger.info("Loaded configuration file {}".format(args.config_file))
-        with open(args.config_file, "r") as cf:
-            config_str = "\n" + cf.read()
-            logger.info(config_str)
-    logger.info("Running with config:\n{}".format(cfg))
+    log_dir, logger = setup_log_dir(cfg, args)
 
     if cfg.MODEL.DIST_TRAIN:
         torch.distributed.init_process_group(backend="nccl", init_method="env://")
-
-    os.environ["CUDA_VISIBLE_DEVICES"] = cfg.MODEL.DEVICE_ID
     use_multi_dataset = getattr(cfg.SOLVER, "USE_MULTI_PRETRAIN", False)
     if use_multi_dataset:
         train_loader_pair, num_classes, camera_num = make_multi_dataset_clip_loader(cfg)
@@ -81,15 +75,25 @@ if __name__ == "__main__":
     scheduler = create_scheduler(cfg, optimizer)
 
     start_epoch, scaler_state_dict = resume_from_checkpoint(cfg, cfg.SOLVER.RESUME_FROM, model, optimizer, scheduler, args.local_rank)
+    if cfg.MODEL.METRIC_LOSS_TYPE == 'ibot' and cfg.SOLVER.RESUME_FROM and isinstance(loss_func, torch.nn.Module):
+        ckpt = torch.load(cfg.SOLVER.RESUME_FROM, map_location='cpu')
+        if isinstance(ckpt, dict) and "ibot_loss_state_dict" in ckpt:
+            loss_func.load_state_dict(ckpt["ibot_loss_state_dict"], strict=False)
+            if args.local_rank == 0:
+                logger.info("Loaded iBOT loss state from {}".format(cfg.SOLVER.RESUME_FROM))
 
-    do_train_pair(
-        cfg, 
-        model, 
-        train_loader_pair, 
-        optimizer, 
-        scheduler, 
+    warnings.filterwarnings("once", message=".*upsample_bicubic2d_backward.*")
+
+    train_fn = do_train_pair_ibot if cfg.MODEL.METRIC_LOSS_TYPE == 'ibot' else do_train_pair
+    train_fn(
+        cfg,
+        model,
+        train_loader_pair,
+        optimizer,
+        scheduler,
         loss_func,
         args.local_rank,
         start_epoch=start_epoch,
-        scaler_state_dict=scaler_state_dict
-        )
+        scaler_state_dict=scaler_state_dict,
+        log_dir=log_dir,
+    )

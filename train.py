@@ -1,4 +1,3 @@
-from utils.logger import setup_logger
 from datasets import make_dataloader
 from model import make_model
 from solver import make_optimizer
@@ -11,6 +10,7 @@ import numpy as np
 import os
 import argparse
 from config import cfg
+from utils.logdir import setup_log_dir
 from utils.checkpoint_utils import resume_from_checkpoint
 
 def set_seed(seed):
@@ -45,20 +45,7 @@ if __name__ == '__main__':
     if cfg.MODEL.DIST_TRAIN:
         torch.cuda.set_device(args.local_rank)
 
-    output_dir = cfg.OUTPUT_DIR
-    if output_dir and not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    logger = setup_logger("train", output_dir, if_train=True)
-    logger.info("Saving model in the path :{}".format(cfg.OUTPUT_DIR))
-    logger.info(args)
-
-    if args.config_file != "":
-        logger.info("Loaded configuration file {}".format(args.config_file))
-        with open(args.config_file, 'r') as cf:
-            config_str = "\n" + cf.read()
-            logger.info(config_str)
-    logger.info("Running with config:\n{}".format(cfg))
+    log_dir, logger = setup_log_dir(cfg, args)
 
     if cfg.MODEL.DIST_TRAIN:
         torch.distributed.init_process_group(backend='nccl', init_method='env://')
@@ -88,5 +75,6 @@ if __name__ == '__main__':
         loss_func,
         num_query_val, args.local_rank,
         start_epoch=start_epoch,
-        scaler_state_dict=scaler_state_dict
+        scaler_state_dict=scaler_state_dict,
+        log_dir=log_dir,
     )
