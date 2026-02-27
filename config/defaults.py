@@ -71,6 +71,44 @@ _C.MODEL.RGB_CHANNELS = [0, 1, 2]
 _C.MODEL.SAR_CHANNELS = [10, 11]
 
 # -----------------------------------------------------------------------------
+# iBOT pretraining
+# -----------------------------------------------------------------------------
+_C.IBOT = CN()
+_C.IBOT.OUT_DIM = 8192
+_C.IBOT.PATCH_OUT_DIM = 8192
+_C.IBOT.SHARED_HEAD = False
+_C.IBOT.SHARED_HEAD_TEACHER = True
+_C.IBOT.NORM_LAST_LAYER = True
+_C.IBOT.NORM_IN_HEAD = ""
+_C.IBOT.ACT_IN_HEAD = "gelu"
+_C.IBOT.HEAD_NLAYERS = 3
+_C.IBOT.HEAD_HIDDEN_DIM = 2048
+_C.IBOT.HEAD_BOTTLENECK_DIM = 256
+_C.IBOT.GLOBAL_CROPS_NUMBER = 2
+_C.IBOT.LOCAL_CROPS_NUMBER = 10
+_C.IBOT.GLOBAL_CROPS_SCALE = (0.32, 1.0)
+_C.IBOT.LOCAL_CROPS_SCALE = (0.05, 0.32)
+_C.IBOT.GLOBAL_SIZE = 224
+_C.IBOT.LOCAL_SIZE = 96
+_C.IBOT.PRED_RATIO = (0.0, 0.7)
+_C.IBOT.PRED_RATIO_VAR = (0.0, 0.05)
+_C.IBOT.PRED_SHAPE = "rand"
+_C.IBOT.PRED_START_EPOCH = 0
+_C.IBOT.WARMUP_TEACHER_TEMP = 0.04
+_C.IBOT.TEACHER_TEMP = 0.06
+_C.IBOT.WARMUP_TEACHER_PATCH_TEMP = 0.04
+_C.IBOT.TEACHER_PATCH_TEMP = 0.06
+_C.IBOT.WARMUP_TEACHER_TEMP_EPOCHS = 30
+_C.IBOT.MOMENTUM_TEACHER = 0.996
+_C.IBOT.LAMBDA1 = 1.0
+_C.IBOT.LAMBDA2 = 1.0
+_C.IBOT.CLIP_GRAD = 0.5
+_C.IBOT.FREEZE_LAST_LAYER_EPOCHS = 1
+_C.IBOT.SAMPLING_SUBSET = True
+_C.IBOT.SYNC_CHANNEL_COUNT = True
+_C.IBOT.MODALITY_PURE_SAMPLING = False
+
+# -----------------------------------------------------------------------------
 # INPUT
 # -----------------------------------------------------------------------------
 _C.INPUT = CN()
@@ -98,7 +136,7 @@ _C.DATASETS = CN()
 # List of the dataset names for training, as present in paths_catalog.py
 _C.DATASETS.NAMES = ('HOSS')
 # Root directory where datasets should be used (and downloaded if not found)
-_C.DATASETS.ROOT_DIR = ('/nfs/h100/raid/rs/vessel_detection')
+_C.DATASETS.ROOT_DIR = ('/data/ship')
 # Evaluation mode for datasets: 'rgb_sar', 'sar_rgb', 'rgb_mixed', 'sar_mixed' or 'all'
 _C.DATASETS.EVAL_MODE = 'all'
 
@@ -130,6 +168,8 @@ _C.SOLVER.LARGE_FC_LR = False
 _C.SOLVER.BIAS_LR_FACTOR = 1
 # Factor of learning bias
 _C.SOLVER.SEED = 1234
+# Whether to force deterministic algorithms/kernels (slower but reproducible)
+_C.SOLVER.DETERMINISTIC = True
 # Momentum
 _C.SOLVER.MOMENTUM = 0.9
 # Margin of triplet loss
@@ -159,17 +199,28 @@ _C.SOLVER.COSINE_SCALE = 30
 
 # LR scheduler type: 'cosine', 'step', or 'wsd'
 _C.SOLVER.SCHEDULER_TYPE = 'cosine'
+# WSD scheduler: fraction of total epochs for the decay phase
+_C.SOLVER.WSD_DECAY_PCT = 0.1
+# WSD scheduler: target total epochs for which extra checkpoints are saved
+# e.g. (20, 40, 80, 100) -> checkpoints at floor((1-WSD_DECAY_PCT)*T) for each T
+_C.SOLVER.WSD_DECAY_TARGETS = ()
 
-# epoch number of saving checkpoints
+# epoch number of saving checkpoints (-1 to disable periodic saving)
 _C.SOLVER.CHECKPOINT_PERIOD = 10
+# save latest checkpoint after every epoch
+_C.SOLVER.SAVE_LATEST_EVERY_EPOCH = True
 # iteration of display training log
 _C.SOLVER.LOG_PERIOD = 100
+# Whether to compute/log gradient norm diagnostics
+_C.SOLVER.LOG_GRAD_NORM = True
 # epoch number of validation
 _C.SOLVER.EVAL_PERIOD = 10
 # Number of images per batch
 # This is global, so if we have 8 GPUs and IMS_PER_BATCH = 128, each GPU will
 # contain 16 images per batch
 _C.SOLVER.IMS_PER_BATCH = 64
+# Number of gradient accumulation micro-steps per optimizer update
+_C.SOLVER.GRAD_ACCUM_STEPS = 1
 _C.SOLVER.TRACK_VALIDATION_METRICS = True
 _C.SOLVER.TRACK_VALIDATION_METRICS_OPTISAR = True
 _C.SOLVER.PRETRAIN_TRACK_VALIDATION_DIR = ''
@@ -208,3 +259,5 @@ _C.OUTPUT_DIR = ""
 _C.WANDB = CN()
 _C.WANDB.PROJECT = "vessel-reidentification"
 _C.WANDB.NAME = ""
+_C.WANDB.MODE = "online"
+_C.WANDB.ALLOW_NO_KEY_FALLBACK = True

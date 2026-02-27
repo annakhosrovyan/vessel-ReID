@@ -40,6 +40,7 @@ if __name__ == "__main__":
     parser.add_argument("--config_file", default="", help="path to config file", type=str)
     parser.add_argument("opts", help="Modify config options using the command-line", default=None, nargs=argparse.REMAINDER)
     parser.add_argument("--local-rank", default=-1, type=int)
+    parser.add_argument("--log_dir_name", default="", type=str, help="override log subdirectory name (share across runs)")
     args = parser.parse_args()
     if args.local_rank == -1:
         args.local_rank = int(os.environ.get("LOCAL_RANK", 0))
@@ -54,12 +55,10 @@ if __name__ == "__main__":
 
     if cfg.MODEL.DIST_TRAIN:
         torch.cuda.set_device(args.local_rank)
+        torch.distributed.init_process_group(backend="nccl", init_method="env://")
     set_seed(cfg.SOLVER.SEED, deterministic=cfg.SOLVER.DETERMINISTIC)
 
-    log_dir, logger = setup_log_dir(cfg, args)
-
-    if cfg.MODEL.DIST_TRAIN:
-        torch.distributed.init_process_group(backend="nccl", init_method="env://")
+    log_dir, logger = setup_log_dir(cfg, args, log_dir_name=args.log_dir_name)
     use_multi_dataset = getattr(cfg.SOLVER, "USE_MULTI_PRETRAIN", False)
     if use_multi_dataset:
         train_loader_pair, num_classes, camera_num = make_multi_dataset_clip_loader(cfg)
@@ -78,7 +77,21 @@ if __name__ == "__main__":
     if cfg.MODEL.METRIC_LOSS_TYPE == 'ibot' and cfg.SOLVER.RESUME_FROM and isinstance(loss_func, torch.nn.Module):
         ckpt = torch.load(cfg.SOLVER.RESUME_FROM, map_location='cpu')
         if isinstance(ckpt, dict) and "ibot_loss_state_dict" in ckpt:
-            loss_func.load_state_dict(ckpt["ibot_loss_state_dict"], strict=False)
+            ibot_state = ckpt["ibot_loss_state_dict"]
+            # Handle schedule length mismatch when resuming with different MAX_EPOCHS
+            schedule_keys = ["teacher_temp_schedule", "teacher_temp2_schedule"]
+            saved_schedules = {}
+            for k in schedule_keys:
+                if k in ibot_state:
+                    saved_schedules[k] = ibot_state.pop(k)
+            loss_func.load_state_dict(ibot_state, strict=False)
+            for k, saved in saved_schedules.items():
+                current = getattr(loss_func, k)
+                n = current.numel()
+                if saved.numel() >= n:
+                    current.copy_(saved[:n])
+                else:
+                    current[:saved.numel()].copy_(saved)
             if args.local_rank == 0:
                 logger.info("Loaded iBOT loss state from {}".format(cfg.SOLVER.RESUME_FROM))
 

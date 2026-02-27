@@ -9,6 +9,7 @@ from .softmax_loss import CrossEntropyLabelSmooth, LabelSmoothingCrossEntropy
 from .triplet_loss import TripletLoss
 from .center_loss import CenterLoss
 from .contrastive_loss import clip_loss
+from .ibot_loss import IBOTLoss
 
 
 def make_loss(cfg, num_classes):    # modified by gu
@@ -16,6 +17,25 @@ def make_loss(cfg, num_classes):    # modified by gu
         def loss_func(logits_per_sar):
             return clip_loss(logits_per_sar)
         print("using CLIP loss (symmetric cross-entropy) for pretraining")
+        return loss_func, None
+
+    if cfg.MODEL.PAIR and cfg.MODEL.METRIC_LOSS_TYPE == 'ibot':
+        loss_func = IBOTLoss(
+            out_dim=cfg.IBOT.OUT_DIM,
+            patch_out_dim=cfg.IBOT.PATCH_OUT_DIM,
+            ngcrops=cfg.IBOT.GLOBAL_CROPS_NUMBER,
+            nlcrops=cfg.IBOT.LOCAL_CROPS_NUMBER,
+            warmup_teacher_temp=cfg.IBOT.WARMUP_TEACHER_TEMP,
+            teacher_temp=cfg.IBOT.TEACHER_TEMP,
+            warmup_teacher_patch_temp=cfg.IBOT.WARMUP_TEACHER_PATCH_TEMP,
+            teacher_patch_temp=cfg.IBOT.TEACHER_PATCH_TEMP,
+            warmup_teacher_temp_epochs=cfg.IBOT.WARMUP_TEACHER_TEMP_EPOCHS,
+            max_epochs=cfg.SOLVER.MAX_EPOCHS,
+            lambda1=cfg.IBOT.LAMBDA1,
+            lambda2=cfg.IBOT.LAMBDA2,
+            mim_start_epoch=cfg.IBOT.PRED_START_EPOCH,
+        )
+        print("using iBOT loss for pretraining")
         return loss_func, None
     
     sampler = cfg.DATALOADER.SAMPLER
@@ -85,5 +105,3 @@ def make_loss(cfg, num_classes):    # modified by gu
         print('expected sampler should be softmax, triplet, softmax_triplet or softmax_triplet_center'
               'but got {}'.format(cfg.DATALOADER.SAMPLER))
     return loss_func, center_criterion
-
-

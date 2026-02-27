@@ -44,11 +44,9 @@ if __name__ == '__main__':
 
     if cfg.MODEL.DIST_TRAIN:
         torch.cuda.set_device(args.local_rank)
+        torch.distributed.init_process_group(backend='nccl', init_method='env://')
 
     log_dir, logger = setup_log_dir(cfg, args)
-
-    if cfg.MODEL.DIST_TRAIN:
-        torch.distributed.init_process_group(backend='nccl', init_method='env://')
 
     os.environ['CUDA_VISIBLE_DEVICES'] = cfg.MODEL.DEVICE_ID
     train_loader, val_loader, num_query_val, _, _, num_classes, camera_num = make_dataloader(cfg)

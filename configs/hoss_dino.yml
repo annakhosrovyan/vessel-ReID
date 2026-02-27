@@ -28,7 +28,7 @@ INPUT:
 
 DATASETS:
   NAMES: ('HOSS')
-  ROOT_DIR: ('/nfs/h100/raid/rs/vessel_detection')
+  ROOT_DIR: ('/data/ship')
   EVAL_MODE: 'all'
 
 DATALOADER:
@@ -48,7 +48,7 @@ SOLVER:
   EVAL_PERIOD: 1
   TRACK_VALIDATION_METRICS: True
   TRACK_VALIDATION_METRICS_OPTISAR: True
-  PRETRAIN_TRACK_VALIDATION_DIR: '/nfs/dgx/raid/rs/rs/vessel_re_id/'
+  PRETRAIN_TRACK_VALIDATION_DIR: '/data/ship/vessel_re_id/'
   SEED: 42
   WEIGHT_DECAY: 1e-4
   WEIGHT_DECAY_BIAS: 1e-4

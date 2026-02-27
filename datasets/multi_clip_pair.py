@@ -1,68 +1,77 @@
 from pathlib import Path
-import math
+import os
 
 import torch
 import torch.distributed as dist
 import torchvision.transforms as T
 
-from .msaw import create_msaw_dataloader
-from .openearthmap_sar import create_openearthmap_sar_dataloader
-from .qxs_saropt import create_qxs_saropt_dataloader
-from .sar2opt import create_sar2opt_dataloader
-from .sarptical import create_sarptical_dataloader
+from torch.utils.data import DataLoader, Dataset
+from torch.utils.data.distributed import DistributedSampler
+
+from .msaw import MsawPairDataset
+from .openearthmap_sar import OpenEarthMapSarPairDataset
+from .qxs_saropt import QxsSaroptPairDataset
+from .sar2opt import Sar2OptPairDataset
+from .sarptical import SarpticalPairDataset
 
 
-DATASET_ROOTS = {
-    "MSAW": "/nfs/h100/raid/rs/vessel_detection/RGB_SAR_datasets/pretraining/MSAW/train",
-    "OpenEarthMap-SAR": "/nfs/h100/raid/rs/vessel_detection/RGB_SAR_datasets/pretraining/OpenEarthMap-SAR/train",
-    "QXS-SAROPT": "/nfs/h100/raid/rs/vessel_detection/RGB_SAR_datasets/pretraining/QXS-SAROPT/QXSLAB_SAROPT",
-    "SAR2Opt": "/nfs/h100/raid/rs/vessel_detection/RGB_SAR_datasets/pretraining/SAR2Opt",
-    "SARptical": "/nfs/h100/raid/rs/vessel_detection/RGB_SAR_datasets/pretraining/SARptical",
-}
+def _seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    # Keep imports local to avoid pulling in heavy modules at import time.
+    import random
+    import numpy as np
+
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
-def _build_loaders(cfg):
-    for name, root in DATASET_ROOTS.items():
+def _is_rank0():
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_rank() == 0
+    return int(os.environ.get("LOCAL_RANK", 0)) == 0
+
+
+def rank0_print(*args, **kwargs):
+    if _is_rank0():
+        print(*args, **kwargs)
+
+
+def _build_datasets(root_dir):
+    dataset_builders = [
+        ("MSAW", MsawPairDataset, "RGB_SAR_datasets/pretraining/MSAW/train"),
+        ("OpenEarthMap-SAR", OpenEarthMapSarPairDataset, "RGB_SAR_datasets/pretraining/OpenEarthMap-SAR/train"),
+        ("QXS-SAROPT", QxsSaroptPairDataset, "RGB_SAR_datasets/pretraining/QXS-SAROPT/QXSLAB_SAROPT"),
+        ("SAR2Opt", Sar2OptPairDataset, "RGB_SAR_datasets/pretraining/SAR2Opt"),
+        ("SARptical", SarpticalPairDataset, "RGB_SAR_datasets/pretraining/SARptical"),
+    ]
+
+    datasets = []
+    total_pairs = 0
+    for name, dataset_cls, rel_path in dataset_builders:
+        root = os.path.join(root_dir, rel_path)
         if not Path(root).exists():
             raise ValueError("Root for dataset {} does not exist: {}".format(name, root))
-
-    batch_size_pair = int(cfg.SOLVER.IMS_PER_BATCH / 2)
-    if batch_size_pair <= 0:
-        raise ValueError("cfg.SOLVER.IMS_PER_BATCH must be positive and even.")
-
-    num_workers = cfg.DATALOADER.NUM_WORKERS
-
-    loaders = []
-    names = ["MSAW", "OpenEarthMap-SAR", "QXS-SAROPT", "SAR2Opt", "SARptical"]
-    loaders.append(create_msaw_dataloader(DATASET_ROOTS["MSAW"], batch_size_pair, num_workers, shuffle=True))
-    loaders.append(create_openearthmap_sar_dataloader(DATASET_ROOTS["OpenEarthMap-SAR"], batch_size_pair, num_workers, shuffle=True))
-    loaders.append(create_qxs_saropt_dataloader(DATASET_ROOTS["QXS-SAROPT"], batch_size_pair, num_workers, shuffle=True))
-    loaders.append(create_sar2opt_dataloader(DATASET_ROOTS["SAR2Opt"], batch_size_pair, num_workers, shuffle=True))
-    loaders.append(create_sarptical_dataloader(DATASET_ROOTS["SARptical"], batch_size_pair, num_workers, shuffle=True))
-
-    total_pairs = 0
-    for name, loader in zip(names, loaders):
-        n_pairs = len(loader.dataset)
+        dataset = dataset_cls(root=root)
+        datasets.append((name, dataset))
+        n_pairs = len(dataset)
         total_pairs += n_pairs
-        print("=> {} CLIP train pairs: {}".format(name, n_pairs))
-    print("=> Total CLIP train pairs (all datasets): {}".format(total_pairs))
+        rank0_print("=> {} CLIP train pairs: {}".format(name, n_pairs))
 
-    return loaders
+    if total_pairs == 0:
+        raise ValueError("No training pairs found in multi-dataset loader.")
+    rank0_print("=> Total CLIP train pairs (all datasets): {}".format(total_pairs))
+    return datasets
 
 
-class MultiDatasetClipLoader:
-    def __init__(self, loaders, global_batch_size, cfg):
-        if global_batch_size % 2 != 0:
-            raise ValueError("global_batch_size must be even.")
-        self.loaders = list(loaders)
-        self.datasets = [loader.dataset for loader in self.loaders]
-        self.batch_size = int(global_batch_size)
-        self.half_batch = self.batch_size // 2
-        self.total_pairs = sum(len(dataset) for dataset in self.datasets)
-        if self.total_pairs == 0:
+class MultiSourcePairDataset(Dataset):
+    def __init__(self, datasets, cfg):
+        self.datasets = [dataset for _, dataset in datasets]
+        self.index_map = []
+        for dataset_idx, dataset in enumerate(self.datasets):
+            for sample_idx in range(len(dataset)):
+                self.index_map.append((dataset_idx, sample_idx))
+        if not self.index_map:
             raise ValueError("No training pairs found in multi-dataset loader.")
-        self.seed = int(getattr(cfg.SOLVER, "SEED", 0))
-        self.epoch = 0
         self.train_transforms = T.Compose(
             [
                 T.Resize(cfg.INPUT.SIZE_TRAIN, interpolation=3),
@@ -72,77 +81,115 @@ class MultiDatasetClipLoader:
             ]
         )
 
-    def set_epoch(self, epoch):
-        self.epoch = int(epoch)
-
-    def _apply_transforms(self, batch):
-        out = []
-        for i in range(batch.shape[0]):
-            out.append(self.train_transforms(batch[i]))
-        return torch.stack(out, dim=0)
-
-    def __iter__(self):
-        indices = []
-        for dataset_idx, dataset in enumerate(self.datasets):
-            for sample_idx in range(len(dataset)):
-                indices.append((dataset_idx, sample_idx))
-        g = torch.Generator(device="cpu").manual_seed(self.seed + self.epoch)
-        order = torch.randperm(len(indices), generator=g, device="cpu").tolist()
-        shuffled = [indices[i] for i in order]
-        if dist.is_available() and dist.is_initialized():
-            rank = dist.get_rank()
-            world_size = dist.get_world_size()
-            half_batch = (self.batch_size // world_size) // 2
-            if half_batch <= 0:
-                half_batch = 1
-            my_indices = shuffled[rank::world_size]
-        else:
-            half_batch = self.half_batch
-            my_indices = shuffled
-        for start in range(0, len(my_indices), half_batch):
-            batch_pairs = my_indices[start:start + half_batch]
-            rgb_list = []
-            sar_list = []
-            for dataset_idx, sample_idx in batch_pairs:
-                rgb_tensor, sar_tensor = self.datasets[dataset_idx][sample_idx]
-                rgb_tensor = self.train_transforms(rgb_tensor)
-                sar_tensor = self.train_transforms(sar_tensor)
-                rgb_list.append(rgb_tensor)
-                sar_list.append(sar_tensor)
-            rgb_batch = torch.stack(rgb_list, dim=0)
-            sar_batch = torch.stack(sar_list, dim=0)
-            if rgb_batch.shape[0] != sar_batch.shape[0]:
-                raise ValueError("RGB and SAR batch size mismatch: {} vs {}".format(rgb_batch.shape[0], sar_batch.shape[0]))
-            b = rgb_batch.shape[0]
-            imgs = torch.cat([rgb_batch, sar_batch], dim=0)
-            vids = torch.arange(b, device=imgs.device, dtype=torch.long)
-            vids = vids.repeat(2)
-            cam_rgb = torch.zeros(b, device=imgs.device, dtype=torch.long)
-            cam_sar = torch.ones(b, device=imgs.device, dtype=torch.long)
-            cams = torch.cat([cam_rgb, cam_sar], dim=0)
-            yield imgs, vids, cams
-
     def __len__(self):
-        if self.total_pairs == 0:
-            return 0
-        if dist.is_available() and dist.is_initialized():
-            rank = dist.get_rank()
-            world_size = dist.get_world_size()
-            half_batch = (self.batch_size // world_size) // 2
-            if half_batch <= 0:
-                return 0
-            num_my = (self.total_pairs + world_size - 1 - rank) // world_size
-            return int(math.ceil(num_my / half_batch))
-        if self.half_batch <= 0:
-            return 0
-        return int(math.ceil(self.total_pairs / self.half_batch))
+        return len(self.index_map)
+
+    def __getitem__(self, index):
+        dataset_idx, sample_idx = self.index_map[index]
+        rgb_tensor, sar_tensor = self.datasets[dataset_idx][sample_idx]
+        rgb_tensor = self.train_transforms(rgb_tensor)
+        sar_tensor = self.train_transforms(sar_tensor)
+        return rgb_tensor, sar_tensor
+
+
+def multi_clip_pair_collate_fn(batch):
+    if len(batch) == 0:
+        raise ValueError("Empty batch received in multi_clip_pair_collate_fn.")
+    rgb_batch = torch.stack([item[0] for item in batch], dim=0)
+    sar_batch = torch.stack([item[1] for item in batch], dim=0)
+    if rgb_batch.shape[0] != sar_batch.shape[0]:
+        raise ValueError(
+            "RGB and SAR batch size mismatch: {} vs {}".format(rgb_batch.shape[0], sar_batch.shape[0])
+        )
+    b = rgb_batch.shape[0]
+    imgs = torch.cat([rgb_batch, sar_batch], dim=0)
+    vids = torch.arange(b, dtype=torch.long).repeat(2)
+    cams = torch.cat(
+        [
+            torch.zeros(b, dtype=torch.long),
+            torch.ones(b, dtype=torch.long),
+        ],
+        dim=0,
+    )
+    return imgs, vids, cams
+
+
+def _build_loader_kwargs(num_workers):
+    loader_kwargs = {
+        "pin_memory": True,
+        "drop_last": True,
+    }
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
+    return loader_kwargs
 
 
 def make_multi_dataset_clip_loader(cfg):
-    loaders = _build_loaders(cfg)
     global_batch_size = int(cfg.SOLVER.IMS_PER_BATCH)
-    loader = MultiDatasetClipLoader(loaders, global_batch_size, cfg)
+    if global_batch_size % 2 != 0:
+        raise ValueError("cfg.SOLVER.IMS_PER_BATCH must be even for pair training.")
+
+    datasets = _build_datasets(cfg.DATASETS.ROOT_DIR)
+    train_set = MultiSourcePairDataset(datasets, cfg)
+    num_workers = int(cfg.DATALOADER.NUM_WORKERS)
+    seed = int(getattr(cfg.SOLVER, "SEED", 0))
+    loader_kwargs = _build_loader_kwargs(num_workers)
+
+    generator = torch.Generator()
+
+    if cfg.MODEL.DIST_TRAIN and dist.is_available() and dist.is_initialized():
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
+        if global_batch_size % world_size != 0:
+            raise ValueError(
+                "cfg.SOLVER.IMS_PER_BATCH ({}) must be divisible by world size ({})".format(
+                    global_batch_size, world_size
+                )
+            )
+        local_batch_size = global_batch_size // world_size
+        if local_batch_size % 2 != 0:
+            raise ValueError(
+                "Per-rank batch size ({}) must be even so RGB/SAR pairs stay aligned. "
+                "Adjust SOLVER.IMS_PER_BATCH or GPU count.".format(local_batch_size)
+            )
+        pair_batch_size = local_batch_size // 2
+        if pair_batch_size <= 0:
+            raise ValueError("Per-rank pair batch size must be > 0.")
+
+        sampler = DistributedSampler(
+            train_set,
+            shuffle=True,
+            drop_last=True,
+            seed=seed,
+        )
+        generator.manual_seed(seed + rank)
+        train_loader_pair = DataLoader(
+            train_set,
+            batch_size=pair_batch_size,
+            sampler=sampler,
+            num_workers=num_workers,
+            collate_fn=multi_clip_pair_collate_fn,
+            worker_init_fn=_seed_worker,
+            generator=generator,
+            **loader_kwargs
+        )
+    else:
+        pair_batch_size = global_batch_size // 2
+        if pair_batch_size <= 0:
+            raise ValueError("Pair batch size must be > 0.")
+        generator.manual_seed(seed)
+        train_loader_pair = DataLoader(
+            train_set,
+            batch_size=pair_batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            collate_fn=multi_clip_pair_collate_fn,
+            worker_init_fn=_seed_worker,
+            generator=generator,
+            **loader_kwargs
+        )
+
     num_classes = 0
     camera_num = 2
-    return loader, num_classes, camera_num
-
+    return train_loader_pair, num_classes, camera_num

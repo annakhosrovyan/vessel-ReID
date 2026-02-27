@@ -16,12 +16,20 @@ import random
 import torch
 import torch.nn as nn
 
+import os
 from typing import List
 from functools import partial
 
 from .chi_vit_utils import Block
 from .chi_vit_utils import trunc_normal_
 from .chi_vit_utils import MultiLevelNeck
+
+
+
+
+def rank0_print(*args, **kwargs):
+    if int(os.environ.get("LOCAL_RANK", 0)) == 0:
+        print(*args, **kwargs)
 
 
 class PatchEmbedPerChannel(nn.Module):
@@ -70,8 +78,8 @@ class PatchEmbedPerChannel(nn.Module):
             trunc_normal_(self.channel_embed, std=0.02)
         else:
             self.channel_embed = None
-        print("enable_sample:", enable_sample)
-        print("shared_proj: ", shared_proj)
+        rank0_print("enable_sample:", enable_sample)
+        rank0_print("shared_proj: ", shared_proj)
 
     def forward(self, x, channel_idxs):
         B, Cin, H, W = x.shape
@@ -192,7 +200,7 @@ class ChiViT(nn.Module):
         self.num_features = self.embed_dim = self.out_dim = embed_dim
         self.in_chans = in_chans
         self.add_ch_embed = add_ch_embed
-        print(f"add_ch_embed value: {add_ch_embed}")
+        rank0_print(f"add_ch_embed value: {add_ch_embed}")
         self.patch_embed = PatchEmbedPerChannel(
             img_size=img_size[0],
             patch_size=patch_size,
@@ -381,12 +389,12 @@ class ChiViT(nn.Module):
                 if model_dict[k].shape == v.shape:
                     filtered_dict[k] = v
                 else:
-                    print(f'Shape mismatch {k}: checkpoint {v.shape} vs model {model_dict[k].shape}')
+                    rank0_print(f'Shape mismatch {k}: checkpoint {v.shape} vs model {model_dict[k].shape}')
             else:
-                print(f'Key not in model: {k}')
-        
+                rank0_print(f'Key not in model: {k}')
+
         self.load_state_dict(filtered_dict, strict=False)
-        print(f'Loading pretrained ChiViT from {model_path}: loaded {len(filtered_dict)}/{len(model_dict)} keys')
+        rank0_print(f'Loading pretrained ChiViT from {model_path}: loaded {len(filtered_dict)}/{len(model_dict)} keys')
 
 
 
@@ -407,7 +415,7 @@ def chivit_base(patch_size=16, **kwargs):
 
 if __name__ == "__main__":
     model = chivit_base()
-    checkpoint_path = "/nfs/dgx/raid/rs/rs/channel_logs/May_2025/May02_12-55-28/checkpoint.pth"
+    checkpoint_path = "/data/ship/chi_vit/checkpoint.pth"
     state_dict = torch.load(checkpoint_path, map_location=torch.device('cpu'), weights_only=False)['teacher']
 
     state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}

@@ -14,6 +14,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from functools import partial
 
@@ -754,16 +755,31 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x):
+    def forward(self, x, need_weights=False):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
+        dropout_p = self.attn_drop.p if self.training else 0.0
+        # Avoid cuDNN SDPA backend due runtime/library mismatch on some nodes.
+        with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):
+            x = F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=None,
+                dropout_p=dropout_p,
+                is_causal=False,
+                scale=float(self.scale),
+            )
 
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        attn = None
+        if need_weights:
+            # Compute attention weights in fp32 for stability/inspection.
+            attn = (q.float() @ k.float().transpose(-2, -1)) * float(self.scale)
+            attn = attn.softmax(dim=-1).to(dtype=q.dtype)
+            if dropout_p > 0:
+                attn = F.dropout(attn, p=dropout_p, training=self.training)
+
+        x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x, attn
@@ -787,7 +803,7 @@ class Block(nn.Module):
             self.gamma_1, self.gamma_2 = None, None
 
     def forward(self, x, return_attention=False):
-        y, attn = self.attn(self.norm1(x))
+        y, attn = self.attn(self.norm1(x), need_weights=return_attention)
         if return_attention:
             return attn
         if self.gamma_1 is None:
@@ -797,4 +813,3 @@ class Block(nn.Module):
             x = x + self.drop_path(self.gamma_1 * y)
             x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
         return x
-

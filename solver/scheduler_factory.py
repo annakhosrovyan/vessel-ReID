@@ -32,7 +32,7 @@ def create_scheduler(cfg, optimizer):
             warmup_lr_init=warmup_lr_init,
             warmup_t=warmup_t,
             t_in_epochs=True,
-            final_decay_pct=0.1,
+            final_decay_pct=cfg.SOLVER.WSD_DECAY_PCT,
             noise_range_t=noise_range,
             noise_pct=0.67,
             noise_std=1.0,

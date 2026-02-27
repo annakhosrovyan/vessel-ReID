@@ -16,7 +16,7 @@ import torchvision.transforms as T
 from datasets.hoss import HOSS
 from datasets.optisar_pair_val import OptiSarPairVal
 from utils.meter import AverageMeter
-from utils.wandb_utils import configure_wandb_metrics
+from utils.wandb_utils import init_wandb_run
 from utils.metrics import R1_mAP_eval, euclidean_distance
 from datasets.bases import ImageDataset
 from torch.utils.data import DataLoader
@@ -33,6 +33,17 @@ from processor.ibot_utils import (
     sample_channel_subsets,
 )
 
+
+
+def _save_checkpoint(cfg, save_dir, epoch, checkpoint, save_numbered=True, save_latest=False):
+    """Save checkpoint to disk. Handles distributed rank check internally."""
+    is_main = not cfg.MODEL.DIST_TRAIN or dist.get_rank() == 0
+    if not is_main:
+        return
+    if save_numbered:
+        torch.save(checkpoint, os.path.join(save_dir, cfg.MODEL.NAME + "_checkpoint_{}.pth".format(epoch)))
+    if save_latest:
+        torch.save(checkpoint, os.path.join(save_dir, cfg.MODEL.NAME + "_checkpoint_latest.pth"))
 
 
 def _setup_validation_dataloader(cfg):
@@ -122,13 +133,11 @@ def do_train_pair(cfg,
     save_dir = log_dir or cfg.OUTPUT_DIR
     writer = None
     if local_rank == 0:
-        wandb.init(
-            project=cfg.WANDB.PROJECT,
-            name=cfg.WANDB.NAME,
-            config=cfg,
-            tags=["pretraining", "clip-loss", cfg.MODEL.TRANSFORMER_TYPE]
+        init_wandb_run(
+            cfg,
+            logger=logger,
+            tags=["pretraining", "clip-loss", cfg.MODEL.TRANSFORMER_TYPE],
         )
-        configure_wandb_metrics()
         writer = SummaryWriter(log_dir=save_dir)
 
     val_loaders_hoss, val_loader_optisar_pair = _setup_validation_dataloader(cfg)
@@ -260,30 +269,21 @@ def do_train_pair(cfg,
                     )
                 )
 
-            if epoch % checkpoint_period == 0 or epoch in decay_target_save_epochs:
-                if cfg.MODEL.DIST_TRAIN:
-                    if dist.get_rank() == 0:
-                        checkpoint = {
-                            'epoch': epoch,
-                            'model_state_dict': model.state_dict(),
-                            'optimizer_state_dict': optimizer.state_dict(),
-                            'scheduler_state_dict': scheduler.state_dict(),
-                            'scaler_state_dict': scaler.state_dict(),
-                            'loss': loss_meter.avg,
-                        }
-                        torch.save(checkpoint, os.path.join(save_dir, cfg.MODEL.NAME + "_checkpoint_{}.pth".format(epoch)))
-                        torch.save(checkpoint, os.path.join(save_dir, cfg.MODEL.NAME + "_checkpoint_latest.pth"))
-                else:
-                    checkpoint = {
-                        'epoch': epoch,
-                        'model_state_dict': model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'scheduler_state_dict': scheduler.state_dict(),
-                        'scaler_state_dict': scaler.state_dict(),
-                        'loss': loss_meter.avg,
-                    }
-                    torch.save(checkpoint, os.path.join(save_dir, cfg.MODEL.NAME + "_checkpoint_{}.pth".format(epoch)))
-                    torch.save(checkpoint, os.path.join(save_dir, cfg.MODEL.NAME + "_checkpoint_latest.pth"))
+            should_save_periodic = checkpoint_period > 0 and epoch % checkpoint_period == 0
+            should_save_decay = epoch in decay_target_save_epochs
+            save_latest_every = cfg.SOLVER.SAVE_LATEST_EVERY_EPOCH
+            if should_save_periodic or should_save_decay or save_latest_every:
+                checkpoint = {
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
+                    'scaler_state_dict': scaler.state_dict(),
+                    'loss': loss_meter.avg,
+                }
+                _save_checkpoint(cfg, save_dir, epoch, checkpoint,
+                                 save_numbered=should_save_periodic or should_save_decay,
+                                 save_latest=save_latest_every)
 
             if local_rank == 0:
                 wandb.log({
@@ -317,6 +317,16 @@ def do_train_pair(cfg,
                 if val_loader_optisar_pair is not None:
                     validation_metrics_tracker.run_pair(eval_model, epoch, val_loader_optisar_pair, collection_name='optisar')
                 _distributed_barrier()
+
+    # Save final checkpoint with epoch number
+    checkpoint = {
+        'epoch': epochs,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'scaler_state_dict': scaler.state_dict(),
+    }
+    _save_checkpoint(cfg, save_dir, epochs, checkpoint)
 
     if writer:
         writer.close()
@@ -357,13 +367,11 @@ def do_train_pair_ibot(cfg,
     save_dir = log_dir or cfg.OUTPUT_DIR
     writer = None
     if local_rank == 0:
-        wandb.init(
-            project=cfg.WANDB.PROJECT,
-            name=cfg.WANDB.NAME,
-            config=cfg,
-            tags=["pretraining", "ibot-loss", cfg.MODEL.TRANSFORMER_TYPE]
+        init_wandb_run(
+            cfg,
+            logger=logger,
+            tags=["pretraining", "ibot-loss", cfg.MODEL.TRANSFORMER_TYPE],
         )
-        configure_wandb_metrics()
         writer = SummaryWriter(log_dir=save_dir)
 
     val_loaders_hoss, val_loader_optisar_pair = _setup_validation_dataloader(cfg)
@@ -433,6 +441,9 @@ def do_train_pair_ibot(cfg,
                 channel_pool=channel_pool,
                 sampling_subset=bool(cfg.IBOT.SAMPLING_SUBSET),
                 sync_channel_count=bool(cfg.IBOT.SYNC_CHANNEL_COUNT),
+                modality_pure_sampling=bool(getattr(cfg.IBOT, "MODALITY_PURE_SAMPLING", False)),
+                rgb_channels=cfg.MODEL.RGB_CHANNELS,
+                sar_channels=cfg.MODEL.SAR_CHANNELS,
                 device=pair_batch.device,
             )
             global_views, local_views = generate_ibot_views(pair_batch, cfg)
@@ -556,21 +567,24 @@ def do_train_pair_ibot(cfg,
                 )
             )
 
-        if epoch % checkpoint_period == 0 or epoch in decay_target_save_epochs:
-            if not cfg.MODEL.DIST_TRAIN or dist.get_rank() == 0:
-                model_state = model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
-                checkpoint = {
-                    'epoch': epoch,
-                    'model_state_dict': model_state,
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict(),
-                    'scaler_state_dict': scaler.state_dict(),
-                    'loss': loss_meter.avg,
-                }
-                if isinstance(loss_func, nn.Module):
-                    checkpoint['ibot_loss_state_dict'] = loss_func.state_dict()
-                torch.save(checkpoint, os.path.join(save_dir, cfg.MODEL.NAME + "_checkpoint_{}.pth".format(epoch)))
-                torch.save(checkpoint, os.path.join(save_dir, cfg.MODEL.NAME + "_checkpoint_latest.pth"))
+        should_save_periodic = checkpoint_period > 0 and epoch % checkpoint_period == 0
+        should_save_decay = epoch in decay_target_save_epochs
+        save_latest_every = cfg.SOLVER.SAVE_LATEST_EVERY_EPOCH
+        if should_save_periodic or should_save_decay or save_latest_every:
+            model_state = model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': model_state,
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'scaler_state_dict': scaler.state_dict(),
+                'loss': loss_meter.avg,
+            }
+            if isinstance(loss_func, nn.Module):
+                checkpoint['ibot_loss_state_dict'] = loss_func.state_dict()
+            _save_checkpoint(cfg, save_dir, epoch, checkpoint,
+                             save_numbered=should_save_periodic or should_save_decay,
+                             save_latest=save_latest_every)
 
         if local_rank == 0:
             wandb.log({
@@ -608,6 +622,19 @@ def do_train_pair_ibot(cfg,
             if val_loader_optisar_pair is not None:
                 validation_metrics_tracker.run_pair(eval_model, epoch, val_loader_optisar_pair, collection_name='optisar')
             _distributed_barrier()
+
+    # Save final checkpoint with epoch number
+    model_state = model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
+    checkpoint = {
+        'epoch': epochs,
+        'model_state_dict': model_state,
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'scaler_state_dict': scaler.state_dict(),
+    }
+    if isinstance(loss_func, nn.Module):
+        checkpoint['ibot_loss_state_dict'] = loss_func.state_dict()
+    _save_checkpoint(cfg, save_dir, epochs, checkpoint)
 
     if writer:
         writer.close()
@@ -667,14 +694,8 @@ def do_train(cfg,
     best_mAP = 0.0
     best_val_acc = -1.0
     best_val_theta = float("nan")
-    if wandb.run is None:   # prevent wandb from initializing multiple times during pretraining
-        wandb.init(
-            project=cfg.WANDB.PROJECT,
-            name=cfg.WANDB.NAME,
-            config=cfg
-        )
-        configure_wandb_metrics()
     if local_rank == 0:
+        init_wandb_run(cfg, logger=logger)
         writer = SummaryWriter(log_dir=save_dir)
 
     global_step = 0
@@ -738,32 +759,22 @@ def do_train(cfg,
             logger.info("Epoch {} done. Time: {:.0f}s, Time/batch: {:.3f}s, Speed: {:.1f} samples/s"
                     .format(epoch, epoch_time, time_per_batch, train_loader.batch_size / time_per_batch))
 
-        if epoch % checkpoint_period == 0 or epoch in decay_target_save_epochs:
-            if cfg.MODEL.DIST_TRAIN:
-                if dist.get_rank() == 0:
-                    checkpoint = {
-                        'epoch': epoch,
-                        'model_state_dict': model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'optimizer_center_state_dict': optimizer_center.state_dict(),
-                        'scheduler_state_dict': scheduler.state_dict(),
-                        'scaler_state_dict': scaler.state_dict(),
-                        'loss': loss_meter.avg,
-                    }
-                    torch.save(checkpoint, os.path.join(save_dir, cfg.MODEL.NAME + "_checkpoint_{}.pth".format(epoch)))
-                    torch.save(checkpoint, os.path.join(save_dir, cfg.MODEL.NAME + "_checkpoint_latest.pth"))
-            else:
-                checkpoint = {
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'optimizer_center_state_dict': optimizer_center.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict(),
-                    'scaler_state_dict': scaler.state_dict(),
-                    'loss': loss_meter.avg,
-                }
-                torch.save(checkpoint, os.path.join(save_dir, cfg.MODEL.NAME + "_checkpoint_{}.pth".format(epoch)))
-                torch.save(checkpoint, os.path.join(save_dir, cfg.MODEL.NAME + "_checkpoint_latest.pth"))
+        should_save_periodic = checkpoint_period > 0 and epoch % checkpoint_period == 0
+        should_save_decay = epoch in decay_target_save_epochs
+        save_latest_every = cfg.SOLVER.SAVE_LATEST_EVERY_EPOCH
+        if should_save_periodic or should_save_decay or save_latest_every:
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'optimizer_center_state_dict': optimizer_center.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'scaler_state_dict': scaler.state_dict(),
+                'loss': loss_meter.avg,
+            }
+            _save_checkpoint(cfg, save_dir, epoch, checkpoint,
+                             save_numbered=should_save_periodic or should_save_decay,
+                             save_latest=save_latest_every)
 
         if epoch % eval_period == 0:
             eval_model = model.module if hasattr(model, "module") else model
@@ -806,6 +817,17 @@ def do_train(cfg,
                 writer.add_scalar("train/loss_epoch", loss_meter.avg, epoch)
                 writer.add_scalar("train/acc_epoch", acc_meter.avg, epoch)
                 writer.add_scalar("train/lr_epoch", scheduler.get_last_lr()[0], epoch)
+
+    # Save final checkpoint with epoch number
+    checkpoint = {
+        'epoch': epochs,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'optimizer_center_state_dict': optimizer_center.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'scaler_state_dict': scaler.state_dict(),
+    }
+    _save_checkpoint(cfg, save_dir, epochs, checkpoint)
 
     if local_rank == 0:
         if writer:

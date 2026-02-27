@@ -26,7 +26,7 @@ INPUT:
 
 DATASETS:
   NAMES: ('Pretrain')
-  ROOT_DIR: ('/nfs/dgx/raid/rs/rs/vessel_re_id/')
+  ROOT_DIR: ('/data/ship/vessel_re_id/')
 
 DATALOADER:
   NUM_WORKERS: 8
@@ -48,13 +48,13 @@ SOLVER:
   WEIGHT_DECAY_BIAS: 1e-4
   BIAS_LR_FACTOR: 2
   SEED: 42
-  PRETRAIN_TRACK_VALIDATION_DIR: '/nfs/dgx/raid/rs/rs/vessel_re_id/'
+  PRETRAIN_TRACK_VALIDATION_DIR: '/data/ship/vessel_re_id/'
 
 TEST:
   NECK_FEAT: 'before'
   FEAT_NORM: 'yes'
 
-OUTPUT_DIR: '/nfs/dgx/raid/rs/rs/vessel_re_id/checkpoints/pretrain_dino_v3'
+OUTPUT_DIR: '/data/ship/vessel_re_id/checkpoints/pretrain_dino_v3'
 
 WANDB:
   PROJECT: 'vessel-reid-pretraining'

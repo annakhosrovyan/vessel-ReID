@@ -1,6 +1,6 @@
 MODEL:
   PRETRAIN_CHOICE: 'imagenet'
-  PRETRAIN_PATH: '/nfs/h100/raid/rs/vessel_detection/weights/vit_b512_pre.pth'
+  PRETRAIN_PATH: '/data/ship/weights/vit_b512_pre.pth'
   NAME: 'transformer'
   NO_MARGIN: True
   DEVICE_ID: ('0')
@@ -25,7 +25,7 @@ INPUT:
 
 DATASETS:
   NAMES: ('Pretrain')
-  ROOT_DIR: ('/nfs/dgx/raid/rs/rs/vessel_re_id/')
+  ROOT_DIR: ('/data/ship/vessel_re_id/')
 
 DATALOADER:
   NUM_WORKERS: 8
@@ -47,10 +47,10 @@ SOLVER:
   WEIGHT_DECAY_BIAS: 1e-4
   BIAS_LR_FACTOR: 2
   SEED: 42
-  PRETRAIN_TRACK_VALIDATION_DIR: '/nfs/dgx/raid/rs/rs/vessel_re_id/'
+  PRETRAIN_TRACK_VALIDATION_DIR: '/data/ship/vessel_re_id/'
 
 
-OUTPUT_DIR: '/nfs/dgx/raid/rs/rs/vessel_re_id/checkpoints/pretrain_transoss'
+OUTPUT_DIR: '/data/ship/vessel_re_id/checkpoints/pretrain_transoss'
 
 WANDB:
   PROJECT: 'vessel-reid-pretraining'

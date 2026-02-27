@@ -3,3 +3,4 @@ logs/
 scripts/
 .vscode/
 wandb/
+slurm-*.out

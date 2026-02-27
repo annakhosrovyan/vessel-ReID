@@ -98,7 +98,8 @@ class ValidationMetricsTracker:
             return 0.0, float("nan"), 0.0, 0.0, np.zeros(0, dtype=np.float32)
 
         self.logger.info(f"Epoch {epoch}    tracking validation metrics...")
-        model.eval()
+        model_ref = model.module if hasattr(model, "module") else model
+        model_ref.eval()
 
         mode_results = {}
         all_best_acc = 0.0
@@ -114,7 +115,7 @@ class ValidationMetricsTracker:
                     camids = camids.to("cuda")
                     img_wh = img_wh.to("cuda")
 
-                    feat = model(img, cam_label=camids, img_wh=img_wh)
+                    feat = model_ref(img, cam_label=camids, img_wh=img_wh)
                     evaluator.update((feat, vid, camid))
 
             cmc, mAP, mINP, distmat, pids, camids, qf, gf = evaluator.compute()
@@ -178,7 +179,8 @@ class ValidationMetricsTracker:
         
         self.logger.info(f"Epoch {epoch}    tracking validation metrics for pairs...")
 
-        model.eval()
+        model_ref = model.module if hasattr(model, "module") else model
+        model_ref.eval()
         feats1_list, feats2_list = [], []
         pids_list, camids1_list, camids2_list = [], [], []
         for _, batch in enumerate(val_loader):
@@ -199,8 +201,8 @@ class ValidationMetricsTracker:
                 camids1_list.append(camid1)
                 camids2_list.append(camid2)
 
-                feat1 = model(img1, cam_label=camid1, img_wh=img_wh1)
-                feat2 = model(img2, cam_label=camid2, img_wh=img_wh2)
+                feat1 = model_ref(img1, cam_label=camid1, img_wh=img_wh1)
+                feat2 = model_ref(img2, cam_label=camid2, img_wh=img_wh2)
                 
                 feats1_list.append(feat1)
                 feats2_list.append(feat2)
@@ -224,17 +226,16 @@ class ValidationMetricsTracker:
         self.log_distance_stats(distmat, pids, camids, q_count, collection_name=collection_name)
         self.log_posneg_margins(distmat, pids, camids, q_count, collection_name=collection_name, epoch=epoch)
         
-        if hasattr(model, "module"):
-            logit_scale = model.module.logit_scale.exp().item()
-        else:
-            logit_scale = model.logit_scale.exp().item()
-        sim = torch.matmul(q_feats, g_feats.t()) * float(logit_scale)
-        clip_loss_val = clip_loss(sim)
-        wandb.log({
-            "epoch": epoch,
-            "val/epoch": epoch,
-            f"{collection_name}/clip_loss": clip_loss_val.item(),
-        })
+        model_ref = model.module if hasattr(model, "module") else model
+        if hasattr(model_ref, "logit_scale"):
+            logit_scale = model_ref.logit_scale.exp().item()
+            sim = torch.matmul(q_feats, g_feats.t()) * float(logit_scale)
+            clip_loss_val = clip_loss(sim)
+            wandb.log({
+                "epoch": epoch,
+                "val/epoch": epoch,
+                f"{collection_name}/clip_loss": clip_loss_val.item(),
+            })
 
     def log_metrics(self, epoch, mAP, mINP, cmc):
         self.logger.info(f"Validation Results - Epoch: {epoch}")
