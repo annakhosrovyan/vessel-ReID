@@ -47,7 +47,7 @@ def setup_log_dir(cfg, args, log_dir_name=""):
             with open(args.config_file, "r") as cf:
                 config_str = "\n" + cf.read()
                 logger.info(config_str)
-        #logger.info("Running with config:\n{}".format(cfg))
+        logger.info("Running with config:\n{}".format(cfg))
         with open(os.path.join(log_dir, "config.yml"), "w") as f:
             f.write(cfg.dump())
 
