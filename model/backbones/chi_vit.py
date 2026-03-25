@@ -368,10 +368,19 @@ class ChiViT(nn.Module):
 
     def load_param(self, model_path: str):
         checkpoint = torch.load(model_path, map_location=torch.device('cpu'), weights_only=False)
-        
-        state_dict = checkpoint['teacher']
+        for key in ('teacher', 'state_dict', 'model_state_dict'):
+            if isinstance(checkpoint, dict) and key in checkpoint:
+                state_dict = checkpoint[key]
+                break
+        else:
+            if isinstance(checkpoint, dict) and all(isinstance(v, torch.Tensor) for v in checkpoint.values()):
+                state_dict = checkpoint
+            else:
+                raise KeyError(f"Checkpoint at {model_path} has no 'teacher', 'state_dict', or 'model_state_dict'; keys: {list(checkpoint.keys()) if isinstance(checkpoint, dict) else type(checkpoint)}")
         state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
         state_dict = {k.replace("backbone.", ""): v for k, v in state_dict.items()}
+        state_dict = {k.replace("base.", ""): v for k, v in state_dict.items()}
+        state_dict = {k.replace("student_", ""): v for k, v in state_dict.items()}
         
         model_dict = self.state_dict()
 

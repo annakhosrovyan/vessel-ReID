@@ -4,8 +4,10 @@ import numpy as np
 import torch.distributed as dist
 import torchvision.transforms as T
 
+
 from .hoss import HOSS
 from .pretrain import Pretrain
+from PIL import Image, ImageOps
 from .bases import ImageDataset
 from torch.utils.data import DataLoader
 from .sampler import RandomIdentitySampler
@@ -13,6 +15,27 @@ from .sampler_ddp import RandomIdentitySampler_DDP
 from timm.data.random_erasing import RandomErasing
 from torch.utils.data.distributed import DistributedSampler
 
+
+
+class PadToSquareAndResize:
+    def __init__(self, size, fill=0):
+        self.size = size
+        self.fill = fill
+
+    def __call__(self, img):
+        width, height = img.size
+        if width == height:
+            return img.resize((self.size[0], self.size[1]), Image.BICUBIC)
+        if width > height:
+            pad_top = (width - height) // 2
+            pad_bottom = width - height - pad_top
+            padding = (0, pad_top, 0, pad_bottom)
+        else:
+            pad_left = (height - width) // 2
+            pad_right = height - width - pad_left
+            padding = (pad_left, 0, pad_right, 0)
+        padded = ImageOps.expand(img, border=padding, fill=self.fill)
+        return padded.resize((self.size[0], self.size[1]), Image.BICUBIC)
 
 
 __factory = {
@@ -76,20 +99,51 @@ def val_pair_collate_fn(batch):
 
 
 def make_dataloader(cfg):
-    train_transforms = T.Compose([
-            T.Resize(cfg.INPUT.SIZE_TRAIN, interpolation=3),
-            T.RandomHorizontalFlip(p=cfg.INPUT.PROB),
-            T.Pad(cfg.INPUT.PADDING),
-            T.RandomCrop(cfg.INPUT.SIZE_TRAIN),
-            T.ToTensor(),
-            # RandomErasing(probability=cfg.INPUT.RE_PROB, mode='pixel', max_count=1, device='cpu'),
-            # RandomErasing(probability=cfg.INPUT.RE_PROB, mean=cfg.INPUT.PIXEL_MEAN)
-        ])
+    # train_transforms = T.Compose([
+    #         T.Resize(cfg.INPUT.SIZE_TRAIN, interpolation=3),
+    #         T.RandomHorizontalFlip(p=cfg.INPUT.PROB),
+    #         T.Pad(cfg.INPUT.PADDING),
+    #         T.RandomCrop(cfg.INPUT.SIZE_TRAIN),
+    #         T.ToTensor(),
+    #         # RandomErasing(probability=cfg.INPUT.RE_PROB, mode='pixel', max_count=1, device='cpu'),
+    #         # RandomErasing(probability=cfg.INPUT.RE_PROB, mean=cfg.INPUT.PIXEL_MEAN)
+    #     ])
+    if (
+        getattr(cfg.MODEL, "TRANSFORMER_TYPE", "") == "chivit_base"
+        and getattr(cfg.DATASETS, "NAMES", "") == "HOSS"
+    ):
+        train_transforms = T.Compose([
+                PadToSquareAndResize(size=cfg.INPUT.SIZE_TRAIN),
+                T.RandomHorizontalFlip(p=cfg.INPUT.PROB),
+                T.Pad(cfg.INPUT.PADDING),
+                T.RandomCrop(cfg.INPUT.SIZE_TRAIN),
+                T.ToTensor(),
+            ])
+    else:
+        train_transforms = T.Compose([
+                T.Resize(cfg.INPUT.SIZE_TRAIN, interpolation=3),
+                T.RandomHorizontalFlip(p=cfg.INPUT.PROB),
+                T.Pad(cfg.INPUT.PADDING),
+                T.RandomCrop(cfg.INPUT.SIZE_TRAIN),
+                T.ToTensor(),
+            ])
 
-    val_transforms = T.Compose([
-        T.Resize(cfg.INPUT.SIZE_TEST),
-        T.ToTensor(),
-    ])
+    # val_transforms = T.Compose([
+    #     T.Resize(cfg.INPUT.SIZE_TEST),
+    #     T.ToTensor(),
+    # ])
+    if (getattr(cfg.MODEL, "TRANSFORMER_TYPE", "") == "chivit_base"
+        and getattr(cfg.DATASETS, "NAMES", "") == "HOSS"
+    ):
+        val_transforms = T.Compose([
+            PadToSquareAndResize(size=cfg.INPUT.SIZE_TEST),
+            T.ToTensor(),
+        ])
+    else:
+        val_transforms = T.Compose([
+            T.Resize(cfg.INPUT.SIZE_TEST),
+            T.ToTensor(),
+        ])
 
     num_workers = cfg.DATALOADER.NUM_WORKERS
 

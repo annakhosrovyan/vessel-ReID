@@ -19,18 +19,31 @@ from datasets.bases import ImageDataset
 from torch.utils.data import DataLoader
 from torch.amp import autocast, GradScaler
 from processor.validation_metrics_tracker import ValidationMetricsTracker
-from datasets.make_dataloader import val_pair_collate_fn, val_collate_fn
+from datasets.make_dataloader import val_pair_collate_fn, val_collate_fn, PadToSquareAndResize
+from loss.triplet_loss import TripletLoss
 
 
 
 def _setup_validation_dataloader(cfg):
     val_loaders_hoss = {}
     val_loader_optisar_pair = None
-    
-    val_transforms = T.Compose([
-        T.Resize(cfg.INPUT.SIZE_TEST),
-        T.ToTensor(),
-    ])
+    val_triplet_loader = None
+    # val_transforms = T.Compose([
+    #     T.Resize(cfg.INPUT.SIZE_TEST),
+    #     T.ToTensor(),
+    # ])
+    if (getattr(cfg.MODEL, "TRANSFORMER_TYPE", "") == "chivit_base"
+        and getattr(cfg.DATASETS, "NAMES", "") == "HOSS"
+    ):
+        val_transforms = T.Compose([
+            PadToSquareAndResize(size=cfg.INPUT.SIZE_TEST),
+            T.ToTensor(),
+        ])
+    else:
+        val_transforms = T.Compose([
+            T.Resize(cfg.INPUT.SIZE_TEST),
+            T.ToTensor(),
+        ])
 
     normalize_rgb = T.Normalize(mean=cfg.INPUT.PIXEL_MEAN_RGB, 
                                 std=cfg.INPUT.PIXEL_STD_RGB)
@@ -48,6 +61,20 @@ def _setup_validation_dataloader(cfg):
         )
         num_query_hoss = len(val_ds.query_val)
         val_loaders_hoss[mode] = (val_loader_hoss, num_query_hoss)
+        if mode == "all":
+            from datasets.sampler import RandomIdentitySampler
+            triplet_sampler = RandomIdentitySampler(
+                val_ds.query_val + val_ds.gallery_val,
+                cfg.SOLVER.IMS_PER_BATCH,
+                cfg.DATALOADER.NUM_INSTANCE,
+            )
+            val_triplet_loader = DataLoader(
+                val_set_hoss,
+                batch_size=cfg.SOLVER.IMS_PER_BATCH,
+                sampler=triplet_sampler,
+                num_workers=cfg.DATALOADER.NUM_WORKERS,
+                collate_fn=val_collate_fn,
+            )
 
     if cfg.SOLVER.TRACK_VALIDATION_METRICS_OPTISAR:
         if cfg.SOLVER.IMS_PER_BATCH % 2 != 0:
@@ -59,7 +86,7 @@ def _setup_validation_dataloader(cfg):
             collate_fn=val_pair_collate_fn
         )
 
-    return val_loaders_hoss, val_loader_optisar_pair
+    return val_loaders_hoss, val_loader_optisar_pair, val_triplet_loader
 
 
 def do_train_pair(cfg, 
@@ -92,7 +119,7 @@ def do_train_pair(cfg,
         )
         configure_wandb_metrics()
 
-    val_loaders_hoss, val_loader_optisar_pair = _setup_validation_dataloader(cfg)
+    val_loaders_hoss, val_loader_optisar_pair, _ = _setup_validation_dataloader(cfg)
     validation_metrics_tracker = ValidationMetricsTracker(cfg, local_rank)
 
     if device:
@@ -271,7 +298,7 @@ def do_train(cfg,
     logger.info('start training')
     _LOCAL_PROCESS_GROUP = None
 
-    val_loaders_hoss, val_loader_optisar_pair = _setup_validation_dataloader(cfg)
+    val_loaders_hoss, val_loader_optisar_pair, val_triplet_loader = _setup_validation_dataloader(cfg)
     validation_metrics_tracker = ValidationMetricsTracker(cfg, local_rank)
 
     if device:
@@ -291,6 +318,15 @@ def do_train(cfg,
     best_mAP = 0.0
     best_val_acc = -1.0
     best_val_theta = float("nan")
+    best_val_loss = float("inf")
+    best_val_loss_theta = float("nan")
+
+    val_triplet = None
+    if "triplet" in cfg.MODEL.METRIC_LOSS_TYPE and val_triplet_loader is not None:
+        if cfg.MODEL.NO_MARGIN:
+            val_triplet = TripletLoss()
+        else:
+            val_triplet = TripletLoss(cfg.SOLVER.MARGIN)
     if wandb.run is None:   # prevent wandb from initializing multiple times during pretraining
         wandb.init(
             project=cfg.WANDB.PROJECT,
@@ -382,9 +418,32 @@ def do_train(cfg,
                 torch.save(checkpoint, os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_checkpoint_{}.pth".format(epoch)))
                 torch.save(checkpoint, os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.NAME + "_checkpoint_latest.pth"))
 
+        val_loss_avg = None
         if epoch % eval_period == 0:
             if (cfg.MODEL.DIST_TRAIN and dist.get_rank() == 0) or (not cfg.MODEL.DIST_TRAIN and local_rank == 0):
+                if val_triplet is not None:
+                    val_loss_meter = AverageMeter()
+                    model.eval()
+                    with torch.no_grad():
+                        for img, vid, camid, camids_batch, target_view, imgpath, img_wh in val_triplet_loader:
+                            img = img.to(device)
+                            target = torch.as_tensor(vid, dtype=torch.int64, device=device)
+                            camids_batch = camids_batch.to(device)
+                            img_wh = img_wh.to(device)
+                            feat = model(img, cam_label=camids_batch, img_wh=img_wh)
+                            tri_loss, _, _ = val_triplet(feat, target)
+                            val_loss_meter.update(tri_loss.item(), img.shape[0])
+                    val_loss_avg = val_loss_meter.avg
+
                 best_acc, best_theta, mAP_all, mINP_all, cmc_all = validation_metrics_tracker.run(model=model, epoch=epoch, val_loaders=val_loaders_hoss)
+                last_threshold_payload = {
+                    "epoch": epoch,
+                    "threshold": float(best_theta),
+                    "accuracy": float(best_acc),
+                    "mAP": float(mAP_all),
+                }
+                with open(os.path.join(cfg.OUTPUT_DIR, "last_threshold.json"), "w") as f:
+                    json.dump(last_threshold_payload, f)
                 if best_acc > best_val_acc:
                     best_val_acc = best_acc
                     best_val_theta = best_theta
@@ -402,7 +461,27 @@ def do_train(cfg,
                     best_mAP = mAP_all
                     state_dict = model.module.state_dict() if hasattr(model, "module") else model.state_dict()
                     torch.save(state_dict, os.path.join(cfg.OUTPUT_DIR, 'best_model_mAP.pth'))
+                    threshold_payload = {
+                        "epoch": epoch,
+                        "threshold": float(best_theta),
+                        "mAP": float(best_mAP),
+                    }
+                    with open(os.path.join(cfg.OUTPUT_DIR, "best_threshold_mAP.json"), "w") as f:
+                        json.dump(threshold_payload, f)
                     logger.info("New best model saved with mAP: {:.1%} at epoch {}".format(best_mAP, epoch))
+                if val_loss_avg < best_val_loss:
+                    best_val_loss = val_loss_avg
+                    best_val_loss_theta = best_theta
+                    state_dict = model.module.state_dict() if hasattr(model, "module") else model.state_dict()
+                    torch.save(state_dict, os.path.join(cfg.OUTPUT_DIR, 'best_model_val_loss.pth'))
+                    threshold_payload = {
+                        "epoch": epoch,
+                        "threshold": float(best_val_loss_theta),
+                        "val_loss": float(best_val_loss),
+                    }
+                    with open(os.path.join(cfg.OUTPUT_DIR, "best_threshold_val_loss.json"), "w") as f:
+                        json.dump(threshold_payload, f)
+                    logger.info("New best model saved with val loss: {:.6f} at epoch {}".format(best_val_loss, epoch))
                 torch.cuda.empty_cache()
             if (val_loader_optisar_pair is not None and 
                 ((cfg.MODEL.DIST_TRAIN and dist.get_rank() == 0) or 
@@ -410,12 +489,15 @@ def do_train(cfg,
                 validation_metrics_tracker.run_pair(model, epoch, val_loader_optisar_pair, collection_name='optisar')
 
         if local_rank == 0:
-            wandb.log({
+            log_payload = {
                 "epoch": epoch,
                 "train_loss": loss_meter.avg,
                 "train_acc": acc_meter.avg,
-                "learning_rate": scheduler.get_last_lr()[0]
-            })
+                "learning_rate": scheduler.get_last_lr()[0],
+            }
+            if val_loss_avg is not None:
+                log_payload["val_loss"] = val_loss_avg
+            wandb.log(log_payload)
 
     if local_rank == 0:
         wandb.finish()
@@ -463,14 +545,37 @@ def do_inference(cfg,
 
     def resolve_threshold_path():
         if cfg.TEST.WEIGHT:
-            weight_dir = os.path.dirname(cfg.TEST.WEIGHT)
-            candidate = os.path.join(weight_dir, "best_threshold.json")
+            weight_path = cfg.TEST.WEIGHT
+            weight_dir = os.path.dirname(weight_path)
+            weight_name = os.path.basename(weight_path)
+
+            candidates = []
+            if "best_model_val_loss" in weight_name:
+                candidates.append(os.path.join(weight_dir, "best_threshold_val_loss.json"))
+            if "best_model_threshold_acc" in weight_name:
+                candidates.append(os.path.join(weight_dir, "best_threshold.json"))
+            if "best_model_mAP" in weight_name:
+                candidates.append(os.path.join(weight_dir, "best_threshold_mAP.json"))
+            if "checkpoint" in weight_name:
+                candidates.append(os.path.join(weight_dir, "last_threshold.json"))
+
+            candidates.extend([
+                os.path.join(weight_dir, "best_threshold.json"),
+                os.path.join(weight_dir, "best_threshold_val_loss.json"),
+                os.path.join(weight_dir, "best_threshold_mAP.json"),
+                os.path.join(weight_dir, "last_threshold.json"),
+            ])
+
+            for candidate in candidates:
+                if os.path.exists(candidate):
+                    return candidate
+
+        for name in ["best_threshold.json", "best_threshold_val_loss.json", "best_threshold_mAP.json", "last_threshold.json"]:
+            candidate = os.path.join(cfg.OUTPUT_DIR, name)
             if os.path.exists(candidate):
                 return candidate
-        candidate = os.path.join(cfg.OUTPUT_DIR, "best_threshold.json")
-        if os.path.exists(candidate):
-            return candidate
-        raise FileNotFoundError("best_threshold.json not found in checkpoint directory or OUTPUT_DIR")
+
+        raise FileNotFoundError("no threshold json found in checkpoint directory or OUTPUT_DIR")
 
     def load_threshold(threshold_path):
         with open(threshold_path, "r") as f:
@@ -496,10 +601,22 @@ def do_inference(cfg,
     theta = load_threshold(threshold_path)
     logger.info("Using threshold {:.6f} from {}".format(theta, threshold_path))
 
-    val_transforms = T.Compose([
-        T.Resize(cfg.INPUT.SIZE_TEST),
-        T.ToTensor(),
-    ])
+    # val_transforms = T.Compose([
+    #     T.Resize(cfg.INPUT.SIZE_TEST),
+    #     T.ToTensor(),
+    # ])
+    if (getattr(cfg.MODEL, "TRANSFORMER_TYPE", "") == "chivit_base"
+        and getattr(cfg.DATASETS, "NAMES", "") == "HOSS"
+    ):
+        val_transforms = T.Compose([
+            PadToSquareAndResize(size=cfg.INPUT.SIZE_TEST),
+            T.ToTensor(),
+        ])
+    else:
+        val_transforms = T.Compose([
+            T.Resize(cfg.INPUT.SIZE_TEST),
+            T.ToTensor(),
+        ])
     normalize_rgb = T.Normalize(mean=cfg.INPUT.PIXEL_MEAN_RGB, std=cfg.INPUT.PIXEL_STD_RGB)
     normalize_sar = T.Normalize(mean=cfg.INPUT.PIXEL_MEAN_SAR, std=cfg.INPUT.PIXEL_STD_SAR)
     num_workers = cfg.DATALOADER.NUM_WORKERS
