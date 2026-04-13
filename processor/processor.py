@@ -51,30 +51,34 @@ def _setup_validation_dataloader(cfg):
                                 std=cfg.INPUT.PIXEL_STD_SAR)
 
 
-    eval_modes = ['rgb_sar', 'sar_rgb', 'rgb_mixed', 'sar_mixed', 'all']
-    for mode in eval_modes:
-        val_ds = HOSS(root=cfg.DATASETS.ROOT_DIR, eval_mode=mode, verbose=False)
-        val_set_hoss = ImageDataset(val_ds.query_val + val_ds.gallery_val, val_transforms, normalize_rgb=normalize_rgb, normalize_sar=normalize_sar)
-        val_loader_hoss = DataLoader(
-            val_set_hoss, batch_size=cfg.TEST.IMS_PER_BATCH, shuffle=False, num_workers=cfg.DATALOADER.NUM_WORKERS,
-            collate_fn=val_collate_fn
-        )
-        num_query_hoss = len(val_ds.query_val)
-        val_loaders_hoss[mode] = (val_loader_hoss, num_query_hoss)
-        if mode == "all":
-            from datasets.sampler import RandomIdentitySampler
-            triplet_sampler = RandomIdentitySampler(
-                val_ds.query_val + val_ds.gallery_val,
-                cfg.SOLVER.IMS_PER_BATCH,
-                cfg.DATALOADER.NUM_INSTANCE,
+    if cfg.SOLVER.TRACK_VALIDATION_METRICS:
+        eval_modes = ['rgb_sar', 'sar_rgb', 'rgb_mixed', 'sar_mixed', 'all']
+        hoss_root = getattr(cfg.SOLVER, "HOSS_VALIDATION_ROOT", "")
+        if not hoss_root:
+            hoss_root = cfg.DATASETS.ROOT_DIR
+        for mode in eval_modes:
+            val_ds = HOSS(root=hoss_root, eval_mode=mode, verbose=False)
+            val_set_hoss = ImageDataset(val_ds.query_val + val_ds.gallery_val, val_transforms, normalize_rgb=normalize_rgb, normalize_sar=normalize_sar)
+            val_loader_hoss = DataLoader(
+                val_set_hoss, batch_size=cfg.TEST.IMS_PER_BATCH, shuffle=False, num_workers=cfg.DATALOADER.NUM_WORKERS,
+                collate_fn=val_collate_fn
             )
-            val_triplet_loader = DataLoader(
-                val_set_hoss,
-                batch_size=cfg.SOLVER.IMS_PER_BATCH,
-                sampler=triplet_sampler,
-                num_workers=cfg.DATALOADER.NUM_WORKERS,
-                collate_fn=val_collate_fn,
-            )
+            num_query_hoss = len(val_ds.query_val)
+            val_loaders_hoss[mode] = (val_loader_hoss, num_query_hoss)
+            if mode == "all":
+                from datasets.sampler import RandomIdentitySampler
+                triplet_sampler = RandomIdentitySampler(
+                    val_ds.query_val + val_ds.gallery_val,
+                    cfg.SOLVER.IMS_PER_BATCH,
+                    cfg.DATALOADER.NUM_INSTANCE,
+                )
+                val_triplet_loader = DataLoader(
+                    val_set_hoss,
+                    batch_size=cfg.SOLVER.IMS_PER_BATCH,
+                    sampler=triplet_sampler,
+                    num_workers=cfg.DATALOADER.NUM_WORKERS,
+                    collate_fn=val_collate_fn,
+                )
 
     if cfg.SOLVER.TRACK_VALIDATION_METRICS_OPTISAR:
         if cfg.SOLVER.IMS_PER_BATCH % 2 != 0:
@@ -251,7 +255,7 @@ def do_train_pair(cfg,
                     "train/clip_loss_epoch": loss_meter.avg,
                 })
         
-            if epoch % eval_period == 0:
+            if epoch % eval_period == 0 and cfg.SOLVER.TRACK_VALIDATION_METRICS:
                 best_acc, best_theta, mAP_all, mINP_all, cmc_all = validation_metrics_tracker.run(model=model, epoch=epoch, val_loaders=val_loaders_hoss)
                 if local_rank == 0 and best_acc > best_val_acc:
                     best_val_acc = best_acc

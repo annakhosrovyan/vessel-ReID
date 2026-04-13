@@ -45,7 +45,7 @@ def mixed_clip_loss(
     logits = torch.matmul(embeds, embeds.t()) * logit_scale
     batch_size = logits.size(0)
     eye_mask = torch.eye(batch_size, device=logits.device, dtype=torch.bool)
-    logits = logits.masked_fill(eye_mask, -1e9)
+    logits = logits.masked_fill(eye_mask, torch.finfo(logits.dtype).min)
 
     same_id = labels[:, None].eq(labels[None, :])
     diff_cam = cam_labels[:, None].ne(cam_labels[None, :])
