@@ -161,8 +161,8 @@ def do_train_pair(cfg,
                 target = vid.to(device)
                 target_cam = target_cam.to(device)
                 with autocast('cuda', enabled=cfg.MODEL.USE_AMP):
-                    logits_per_sar = model(img, target, cam_label=target_cam)
-                    loss = loss_func(logits_per_sar)
+                    pair_output = model(img, target, cam_label=target_cam)
+                    loss = loss_func(pair_output, target, target_cam)
 
                 scaler.scale(loss).backward()
 

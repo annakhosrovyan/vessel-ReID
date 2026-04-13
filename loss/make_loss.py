@@ -8,20 +8,33 @@ import torch.nn.functional as F
 from .softmax_loss import CrossEntropyLabelSmooth, LabelSmoothingCrossEntropy
 from .triplet_loss import TripletLoss
 from .center_loss import CenterLoss
-from .contrastive_loss import clip_loss
+from .contrastive_loss import clip_loss, mixed_clip_loss, resolve_clip_style
 
 
 def make_loss(cfg, num_classes):    # modified by gu
-    if cfg.MODEL.PAIR and cfg.MODEL.METRIC_LOSS_TYPE == 'clip':
-        def loss_func(logits_per_sar):
-            return clip_loss(logits_per_sar)
-        print("using CLIP loss (symmetric cross-entropy) for pretraining")
-        return loss_func, None
+    metric_loss_type = str(cfg.MODEL.METRIC_LOSS_TYPE).lower()
+    if cfg.MODEL.PAIR and metric_loss_type in ("clip", "cross_clip", "mixed_clip"):
+        clip_style = resolve_clip_style(metric_loss_type, getattr(cfg.MODEL, "CLIP_STYLE", "cross"))
+        if clip_style == "cross":
+            def loss_func(pair_output, target=None, target_cam=None):
+                return clip_loss(pair_output)
+            print("using cross CLIP loss (symmetric cross-entropy) for pretraining")
+            return loss_func, None
+        if clip_style == "mixed":
+            def loss_func(pair_output, target=None, target_cam=None):
+                if target is None or target_cam is None:
+                    raise ValueError("mixed clip requires both target and target_cam tensors")
+                if not isinstance(pair_output, tuple) or len(pair_output) != 2:
+                    raise ValueError("mixed clip expects model to return (embeddings, logit_scale)")
+                embeddings, logit_scale = pair_output
+                return mixed_clip_loss(embeddings, target, target_cam, logit_scale)
+            print("using mixed CLIP loss (cross-modal positives with all-other negatives) for pretraining")
+            return loss_func, None
     
     sampler = cfg.DATALOADER.SAMPLER
     feat_dim = 2048
     center_criterion = CenterLoss(num_classes=num_classes, feat_dim=feat_dim, use_gpu=True)  # center loss
-    if 'triplet' in cfg.MODEL.METRIC_LOSS_TYPE:
+    if 'triplet' in metric_loss_type:
         if cfg.MODEL.NO_MARGIN:
             triplet = TripletLoss()
             print("using soft triplet loss for training")
@@ -42,7 +55,7 @@ def make_loss(cfg, num_classes):    # modified by gu
 
     elif sampler == 'softmax_triplet':
         def loss_func(score, feat, target, target_cam):
-            if cfg.MODEL.METRIC_LOSS_TYPE == 'triplet':
+            if metric_loss_type == 'triplet':
                 if cfg.MODEL.IF_LABELSMOOTH == 'on':
                     if isinstance(score, list):
                         ID_LOSS = [xent(scor, target) for scor in score[1:]]

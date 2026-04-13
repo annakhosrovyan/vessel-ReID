@@ -2,7 +2,7 @@ import torch
 import wandb
 import logging
 import numpy as np
-from loss.contrastive_loss import clip_loss
+from loss.contrastive_loss import clip_loss, mixed_clip_loss, resolve_clip_style
 from utils.metrics import R1_mAP_eval, euclidean_distance
 
 
@@ -228,8 +228,26 @@ class ValidationMetricsTracker:
             logit_scale = model.module.logit_scale.exp().item()
         else:
             logit_scale = model.logit_scale.exp().item()
-        sim = torch.matmul(q_feats, g_feats.t()) * float(logit_scale)
-        clip_loss_val = clip_loss(sim)
+        metric_loss_type = str(self.cfg.MODEL.METRIC_LOSS_TYPE).lower()
+        if metric_loss_type in ("clip", "cross_clip", "mixed_clip"):
+            clip_style = resolve_clip_style(metric_loss_type, getattr(self.cfg.MODEL, "CLIP_STYLE", "cross"))
+        else:
+            clip_style = "cross"
+        if clip_style == "mixed":
+            all_feats = torch.cat([q_feats, g_feats], dim=0)
+            all_pids = np.concatenate([q_pids, g_pids])
+            all_camids = np.concatenate([q_camids, g_camids])
+            pid_tensor = torch.as_tensor(all_pids, dtype=torch.long, device=all_feats.device)
+            cam_tensor = torch.as_tensor(all_camids, dtype=torch.long, device=all_feats.device)
+            clip_loss_val = mixed_clip_loss(
+                embeddings=all_feats,
+                labels=pid_tensor,
+                cam_labels=cam_tensor,
+                logit_scale=torch.as_tensor(float(logit_scale), dtype=all_feats.dtype, device=all_feats.device),
+            )
+        else:
+            sim = torch.matmul(q_feats, g_feats.t()) * float(logit_scale)
+            clip_loss_val = clip_loss(sim)
         wandb.log({
             "epoch": epoch,
             "val/epoch": epoch,

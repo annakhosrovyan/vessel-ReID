@@ -5,6 +5,7 @@ from .backbones.vit_transoss import vit_base_patch16_224_TransOSS
 from .backbones.dinov3 import DinoV3, DinoV3DualEmbed
 from .backbones.chi_vit import chivit_base
 from loss.metric_learning import Arcface, Cosface, AMSoftmax, CircleLoss
+from loss.contrastive_loss import resolve_clip_style
 
 
 def shuffle_unit(features, shift, group, begin=1):
@@ -215,6 +216,10 @@ class build_transformer(nn.Module):
 
         self.train_pair = False
         self.logit_scale = nn.Parameter(torch.tensor(logit_scale_init_value))
+        self.pair_metric_loss_type = str(cfg.MODEL.METRIC_LOSS_TYPE).lower()
+        self.clip_style = None
+        if self.pair_metric_loss_type in ("clip", "cross_clip", "mixed_clip"):
+            self.clip_style = resolve_clip_style(self.pair_metric_loss_type, getattr(cfg.MODEL, "CLIP_STYLE", "cross"))
         self.rgb_channel_idxs = list(getattr(cfg.MODEL, 'RGB_CHANNELS', [0, 1, 2]))
         self.sar_channel_idxs = list(getattr(cfg.MODEL, 'SAR_CHANNELS', [10, 11]))
 
@@ -253,16 +258,17 @@ class build_transformer(nn.Module):
         if self.training:
             if self.train_pair:
                 b_s = global_feat.size(0)
-                # normalized features
-                opt_embeds = global_feat[0:b_s // 2]
-                sar_embeds = global_feat[b_s // 2:]
-                opt_embeds = opt_embeds / opt_embeds.norm(p=2, dim=-1, keepdim=True)
-                sar_embeds = sar_embeds / sar_embeds.norm(p=2, dim=-1, keepdim=True)
-
-                # cosine similarity as logits
-                logit_scale = self.logit_scale.exp()
-                logits_per_sar = torch.matmul(sar_embeds, opt_embeds.t()) * logit_scale
-                return logits_per_sar
+                if self.clip_style == "cross":
+                    opt_embeds = global_feat[0:b_s // 2]
+                    sar_embeds = global_feat[b_s // 2:]
+                    opt_embeds = opt_embeds / opt_embeds.norm(p=2, dim=-1, keepdim=True)
+                    sar_embeds = sar_embeds / sar_embeds.norm(p=2, dim=-1, keepdim=True)
+                    logit_scale = self.logit_scale.exp()
+                    logits_per_sar = torch.matmul(sar_embeds, opt_embeds.t()) * logit_scale
+                    return logits_per_sar
+                if self.clip_style == "mixed":
+                    return global_feat, self.logit_scale.exp()
+                raise ValueError("Unsupported pair metric loss type: {}".format(self.pair_metric_loss_type))
 
             else:
                 feat = self.bottleneck(global_feat)

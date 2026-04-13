@@ -66,6 +66,7 @@ _C.MODEL.SSE = False
 
 # Pretrain with images pairs
 _C.MODEL.PAIR = False
+_C.MODEL.CLIP_STYLE = 'cross'
 
 _C.MODEL.RGB_CHANNELS = [0, 1, 2]
 _C.MODEL.SAR_CHANNELS = [10, 11]
